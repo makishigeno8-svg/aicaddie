@@ -24,20 +24,31 @@ function parOf(r, n) {
   return h ? h.par : 4;
 }
 function roundStats(r) {
+  const o = { holes: 0, strokes: 0, par: 0, putts: 0, puttHoles: 0, pen: 0, fwH: 0, fwN: 0, gir: 0, three: 0, byPar: { 3: [], 4: [], 5: [] }, kinds: { eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, worse: 0 } };
+  if (r.totalOnly) {
+    const ns = Object.keys(r.pars || {});
+    o.holes = ns.length; o.strokes = r.totalOnly; o.par = ns.reduce((a, n) => a + r.pars[n], 0);
+    if (isNum(r.puttsTotal)) { o.putts = r.puttsTotal; o.puttHoles = ns.length; }
+    o.diff = o.strokes - o.par; o.fwPct = null; o.girPct = null; o.totalOnly = true; o.par3 = o.par4 = o.par5 = null;
+    return o;
+  }
   const holes = Object.keys(r.scores || {}).filter(n => holeScore(r.scores[n])).sort((a, b) => a - b);
-  const o = { holes: holes.length, strokes: 0, par: 0, putts: 0, pen: 0, fwH: 0, fwN: 0, gir: 0, three: 0, byPar: { 3: [], 4: [], 5: [] }, kinds: { eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, worse: 0 } };
+  o.holes = holes.length;
   holes.forEach(n => {
     const s = r.scores[n], st = holeScore(s), p = parOf(r, n);
-    o.strokes += st; o.par += p; o.putts += s.putts || 0; o.pen += s.pen || 0;
+    o.strokes += st; o.par += p; o.pen += s.pen || 0;
     if (p >= 4 && s.fw != null) { o.fwN++; if (s.fw) o.fwH++; }
-    if (st - (s.putts || 0) <= p - 2) o.gir++;
-    if ((s.putts || 0) >= 3) o.three++;
+    if (s.putts != null) {
+      o.putts += s.putts; o.puttHoles++;
+      if (st - s.putts <= p - 2) o.gir++;
+      if (s.putts >= 3) o.three++;
+    }
     (o.byPar[p] = o.byPar[p] || []).push(st);
     const d = st - p; o.kinds[d <= -2 ? 'eagle' : d === -1 ? 'birdie' : d === 0 ? 'par' : d === 1 ? 'bogey' : d === 2 ? 'double' : 'worse']++;
   });
   o.diff = o.holes ? o.strokes - o.par : null;
   o.fwPct = o.fwN ? Math.round(o.fwH / o.fwN * 100) : null;
-  o.girPct = o.holes ? Math.round(o.gir / o.holes * 100) : null;
+  o.girPct = o.puttHoles ? Math.round(o.gir / o.puttHoles * 100) : null;
   o.par3 = avgOf(o.byPar[3]); o.par4 = avgOf(o.byPar[4]); o.par5 = avgOf(o.byPar[5]);
   return o;
 }
@@ -55,6 +66,11 @@ const courseHandicap = (hi, slope, rating, par) => Math.round(hi * (slope / 113)
 function strokesReceived(ch, si) { if (!(ch > 0) || !si) return 0; return Math.floor(ch / 18) + ((si <= ch % 18) ? 1 : 0); }
 function differential(r, hiBefore) {
   const holes = Object.keys(r.pars || {});
+  if (r.totalOnly) {
+    if (holes.length < 18) return null;
+    const par = holes.reduce((a, n) => a + r.pars[n], 0), rating = r.rating || par, slope = r.slope || 113;
+    return { diff: Math.round((113 / slope) * (r.totalOnly - rating) * 10) / 10, ags: r.totalOnly, rating, slope, estimated: true };
+  }
   if (holes.length < 18 || holes.filter(n => holeScore((r.scores || {})[n])).length < 18) return null;
   const par = holes.reduce((a, n) => a + r.pars[n], 0), rating = r.rating || par, slope = r.slope || 113;
   const ch = hiBefore != null ? courseHandicap(hiBefore, slope, rating, par) : null;
@@ -89,7 +105,7 @@ function renderRoundStart() {
       <button class="btn small" data-start="${c.id}">開始</button><button class="x-btn" data-editc="${c.id}">✏️</button></div>`).join('');
   const rounds = [...db.rounds].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 15).map(r => {
     const st = roundStats(r), e = hh.out.find(x => x.r.id === r.id);
-    return `<div class="list-item" data-rd="${r.id}"><div class="grow"><b>${esc(r.courseName)}</b><div class="small muted">${new Date(r.date).toLocaleDateString('ja-JP')}・${st.holes}H・パット${st.putts}${e && e.d ? `・DF ${e.d.diff}` : ''}</div></div><b style="font-size:22px">${st.strokes || '—'}</b><span class="small muted" style="min-width:30px">${sgn(st.diff)}</span>${r.ai ? '<span class="badge">総評</span>' : ''}</div>`;
+    return `<div class="list-item" data-rd="${r.id}"><div class="grow"><b>${esc(r.courseName)}</b><div class="small muted">${new Date(r.date).toLocaleDateString('ja-JP')}・${st.holes}H${st.puttHoles ? '・パット' + st.putts : ''}${r.past ? '・入力' : ''}${e && e.d ? `・DF ${e.d.diff}` : ''}</div></div><b style="font-size:22px">${st.strokes || '—'}</b><span class="small muted" style="min-width:30px">${sgn(st.diff)}</span>${r.ai ? '<span class="badge">総評</span>' : ''}</div>`;
   }).join('');
   const n18 = hh.diffs.length;
   el.innerHTML = `
@@ -98,7 +114,9 @@ function renderRoundStart() {
       <div class="small muted">${hh.hi == null ? `18ホールのラウンドをあと${Math.max(0, 3 - n18)}回記録すると算出されます` : `18ホール ${n18}ラウンドから算出（直近20ラウンドのベスト${HI_TABLE[Math.min(n18, 20)][0]}）`}</div></div>
     <div class="card">
       <button class="btn block" id="find-course">📡 近くのゴルフ場を探す（GPS）</button>
+      <button class="btn block ghost" id="search-course">🔍 コース名で検索</button>
       <button class="btn block ghost" id="manual-course">✏️ 手動でコースを作成</button>
+      <button class="btn block light" id="past-score">📝 過去のスコアを入力（スコアカード撮影も可）</button>
       <p class="small muted" style="margin:4px 0 0;line-height:1.6">ゴルフ場の中で「近くのゴルフ場を探す」を押すと、OpenStreetMapからホール・グリーン・フェアウェイ・バンカー・池を読み込みます。</p>
     </div>
     ${courses ? `<h3>保存済みコース</h3><div class="card">${courses}</div>` : ''}
@@ -107,6 +125,8 @@ function renderRoundStart() {
   $('#hi-card').onclick = showHandicapDetail;
   $('#find-course').onclick = findCourseFlow;
   $('#manual-course').onclick = manualCourseFlow;
+  $('#search-course').onclick = () => searchCourseFlow(async c => { if (await confirmBox(`「${c.name}」でラウンドを開始しますか？`, '開始')) startRound(c.id); else renderRoundStart(); });
+  $('#past-score').onclick = () => pastScoreFlow();
   $$('[data-start]', el).forEach(b => b.onclick = () => startRound(b.dataset.start));
   $$('[data-editc]', el).forEach(b => b.onclick = () => editCourse(courseById(b.dataset.editc), renderRoundStart));
   $$('[data-rd]', el).forEach(b => b.onclick = () => showRoundDetail(db.rounds.find(r => r.id === b.dataset.rd)));
@@ -154,7 +174,7 @@ async function findCourseFlow() {
     $$('[data-i]', el).forEach(b => b.onclick = () => { closeModal(); importOsmCourse(list[+b.dataset.i]); });
   } catch (e) { hideLoading(); toast(e.message, 4000); }
 }
-async function importOsmCourse(c) {
+async function importOsmCourse(c, opts = {}) {
   try {
     showLoading(`${c.name} のホール情報を読み込み中…`);
     const b = c.bounds, p = 0.002, bb = `${b.minlat - p},${b.minlon - p},${b.maxlat + p},${b.maxlon + p}`;
@@ -177,20 +197,23 @@ async function importOsmCourse(c) {
     const course = { id: uid(), name: c.name, source: 'osm', holes, greens, fairways, tees, hazards, rating: null, slope: null, created: Date.now() };
     db.courses.push(course); save();
     toast(msg || `${holes.length}ホールを読み込みました。✏️でコースレート・スロープを入れるとハンディキャップが正確になります`, 5000);
+    if (opts.ask === false) return course;
     if (await confirmBox(`「${c.name}」でラウンドを開始しますか？`, '開始')) startRound(course.id); else renderRoundStart();
-  } catch (e) { hideLoading(); toast(e.message, 4000); }
+    return course;
+  } catch (e) { hideLoading(); toast(e.message, 4000); return null; }
 }
-function manualCourseFlow() {
+function manualCourseFlow() { createCourseForm({ btn: '作成してラウンド開始', onCreated: c => startRound(c.id) }); }
+function createCourseForm({ name = '', btn = '作成', onCreated }) {
   const el = openModal(`<h2>コースを作成</h2>
-    <label class="f">コース名<input id="mc-name" placeholder="例: ○○カントリークラブ"></label>
+    <label class="f">コース名<input id="mc-name" placeholder="例: ○○カントリークラブ" value="${esc(name)}"></label>
     <div class="grid3"><label class="f">ホール数<select id="mc-n"><option>18</option><option>9</option></select></label><label class="f">コースレート<input id="mc-cr" inputmode="decimal" placeholder="例 71.2"></label><label class="f">スロープ<input id="mc-sr" inputmode="numeric" placeholder="例 128"></label></div>
     <label class="f">各ホールのパー（カンマ区切り・省略可）<input id="mc-par" placeholder="4,4,3,5,4,4,3,4,5,..."></label>
     <p class="small muted">コースレート・スロープはスコアカードやゴルフ場のサイトに載っています（ハンディキャップ計算に使用）。グリーン位置はプレー中に「⋯」から登録できます。</p>
-    <button class="btn block" id="mc-ok">作成してラウンド開始</button>`);
+    <button class="btn block" id="mc-ok">${esc(btn)}</button>`);
   $('#mc-ok', el).onclick = () => {
     const n = +$('#mc-n', el).value, pars = $('#mc-par', el).value.split(/[,、\s]+/).map(x => parseInt(x)).filter(x => x >= 3 && x <= 6);
     const course = { id: uid(), name: $('#mc-name', el).value.trim() || 'マイコース', source: 'manual', holes: Array.from({ length: n }, (_, i) => ({ n: i + 1, par: pars[i] || 4, si: null, tee: null, green: null, greenPoly: null, line: null })), greens: [], fairways: [], tees: [], hazards: [], rating: num($('#mc-cr', el).value), slope: num($('#mc-sr', el).value), created: Date.now() };
-    db.courses.push(course); save(); closeModal(); startRound(course.id);
+    db.courses.push(course); save(); closeModal(); if (onCreated) onCreated(course);
   };
 }
 function editCourse(c, after) {
@@ -633,6 +656,7 @@ function renderScoreSheet() {
 }
 function scClass(st, p) { if (!st) return ''; const d = st - p; return d <= -2 ? 'sc-eagle' : d === -1 ? 'sc-birdie' : d === 0 ? 'sc-par' : d === 1 ? 'sc-bogey' : 'sc-double'; }
 function scorecardHTML(r, prev) {
+  if (r.totalOnly) return `<div class="notice">合計スコアのみの記録です（${r.totalOnly}打${isNum(r.puttsTotal) ? `・パット${r.puttsTotal}` : ''}）。</div>`;
   const ns = Object.keys(r.pars || {}).length ? Object.keys(r.pars).map(Number) : (courseById(r.courseId)?.holes.map(h => h.n) || []);
   ns.sort((a, b) => a - b);
   const cur = curRound() === r && curHole() ? curHole().n : null;
@@ -643,10 +667,10 @@ function scorecardHTML(r, prev) {
     return `<table class="sc"><tr class="h"><td>${label}</td>${arr.map(n => `<td>${n}</td>`).join('')}<td>計</td></tr>
       <tr class="h"><td>Par</td>${tds(n => parOf(r, n), sum(n => parOf(r, n)))}</tr>
       <tr><td>打数</td>${tds(n => holeScore(S(n)), sum(n => holeScore(S(n))) || '', n => scClass(holeScore(S(n)), parOf(r, n)))}</tr>
-      <tr class="s"><td>パット</td>${tds(n => S(n) && holeScore(S(n)) ? S(n).putts : '', sum(n => S(n) && S(n).putts) || '')}</tr>
+      <tr class="s"><td>パット</td>${tds(n => S(n) && holeScore(S(n)) && S(n).putts != null ? S(n).putts : '', sum(n => S(n) && S(n).putts) || '')}</tr>
       <tr class="s"><td>ペナ</td>${tds(n => S(n) && S(n).pen ? S(n).pen : '', sum(n => S(n) && S(n).pen) || '')}</tr>
       <tr class="s"><td>FW</td>${tds(n => S(n) && S(n).fw != null ? (S(n).fw ? '◯' : '×') : '', '')}</tr>
-      <tr class="s"><td>GIR</td>${tds(n => { const s = S(n), st = holeScore(s); return st ? (st - (s.putts || 0) <= parOf(r, n) - 2 ? '◯' : '') : ''; }, '')}</tr>
+      <tr class="s"><td>GIR</td>${tds(n => { const s = S(n), st = holeScore(s); return st && s.putts != null ? (st - s.putts <= parOf(r, n) - 2 ? '◯' : '') : ''; }, '')}</tr>
       ${prev ? `<tr class="s prev"><td>前回</td>${tds(n => holeScore((prev.scores || {})[n]) || '', arr.reduce((a, n) => a + (holeScore((prev.scores || {})[n]) || 0), 0) || '')}</tr>` : ''}
     </table>`;
   };
@@ -663,7 +687,7 @@ function endRound() {
   db.rounds.push(rec); db.activeRound = null; save(); stopPlay();
   const st = roundStats(rec), prev = prevRoundOnCourse(rec), ps = prev && roundStats(prev), hh = handicapHistory(), e = hh.out.find(x => x.r.id === rec.id);
   const el = openModal(`<h2>お疲れさまでした！</h2>
-    <div style="text-align:center"><span class="big-num">${st.strokes || '—'}</span> <span style="font-size:18px">(${sgn(st.diff)})</span><div class="muted">パット ${st.putts}・ペナルティ ${st.pen}${st.fwPct != null ? `・FW ${st.fwPct}%` : ''}・パーオン ${st.girPct}%</div></div>
+    <div style="text-align:center"><span class="big-num">${st.strokes || '—'}</span> <span style="font-size:18px">(${sgn(st.diff)})</span><div class="muted">パット ${st.putts}・ペナルティ ${st.pen}${st.fwPct != null ? `・FW ${st.fwPct}%` : ''}${st.girPct != null ? `・パーオン ${st.girPct}%` : ''}</div></div>
     ${ps ? `<div class="notice" style="margin-top:10px">前回（${new Date(prev.date).toLocaleDateString('ja-JP')}）は ${ps.strokes}。今回は <b>${st.strokes - ps.strokes === 0 ? '同スコア' : (st.strokes < ps.strokes ? (ps.strokes - st.strokes) + '打 良化 🎉' : (st.strokes - ps.strokes) + '打 悪化')}</b></div>` : ''}
     ${e && e.d ? `<p style="text-align:center">スコア差（DF） <b>${e.d.diff}</b>${e.d.estimated ? '（推定）' : ''}　ハンディキャップ指数 <b>${e.hiAfter != null ? e.hiAfter.toFixed(1) : '—'}</b></p>` : ''}
     <button class="btn block" id="rv">🤖 詳細・AIの総評を見る</button><button class="btn block ghost" id="cl">閉じる</button>`, () => renderRound());
@@ -682,8 +706,8 @@ function showRoundDetail(rec, autoAI) {
     <div class="grid3" style="margin:10px 0">${box('スコア', `${st.strokes} <small>(${sgn(st.diff)})</small>`)}${box('パット', st.putts)}${box('スコア差 DF', e && e.d ? e.d.diff : '—')}</div>
     ${scorecardHTML(rec, prev)}
     <h3>スタッツ</h3><div class="grid3">
-      ${box('平均パット', st.holes ? (st.putts / st.holes).toFixed(2) : '—')}${box('3パット', st.three)}${box('ペナルティ', st.pen)}
-      ${box('FWキープ', st.fwPct != null ? st.fwPct + '%' : '—')}${box('パーオン', st.girPct + '%')}${box('バーディ以上', st.kinds.birdie + st.kinds.eagle)}
+      ${box('平均パット', st.puttHoles ? (st.putts / st.puttHoles).toFixed(2) : '—')}${box('3パット', st.three)}${box('ペナルティ', st.pen)}
+      ${box('FWキープ', st.fwPct != null ? st.fwPct + '%' : '—')}${box('パーオン', st.girPct != null ? st.girPct + '%' : '—')}${box('バーディ以上', st.kinds.birdie + st.kinds.eagle)}
       ${box('Par3平均', st.par3 ? st.par3.toFixed(2) : '—')}${box('Par4平均', st.par4 ? st.par4.toFixed(2) : '—')}${box('Par5平均', st.par5 ? st.par5.toFixed(2) : '—')}
       ${box('パー', st.kinds.par)}${box('ボギー', st.kinds.bogey)}${box('ダボ以上', st.kinds.double + st.kinds.worse)}</div>
     ${ps ? `<h3>前回（${new Date(prev.date).toLocaleDateString('ja-JP')}）との比較</h3><div class="card"><table class="t"><tr><th></th><th>今回</th><th>前回</th><th>差</th></tr>
@@ -692,7 +716,8 @@ function showRoundDetail(rec, autoAI) {
     ${shotsHTML ? `<details class="card"><summary><b>ショット記録（GPS）</b></summary><div style="margin-top:8px">${shotsHTML}</div></details>` : ''}
     <h3>🤖 AIの総評</h3><div id="rv-ai">${rec.ai ? `<div class="ai-answer">${esc(rec.ai)}</div>` : '<p class="small muted">前回との比較・ホール別の内容・気象をふまえて総評します。</p>'}</div>
     <button class="btn block accent" id="rv-go">${rec.ai ? 'もう一度総評してもらう' : 'AIに総評してもらう'}</button>
-    <div class="grid2"><button class="btn ghost" onclick="closeModal()">閉じる</button><button class="btn danger" id="rv-del">削除</button></div>`);
+    <div class="grid3"><button class="btn ghost" onclick="closeModal()">閉じる</button><button class="btn light" id="rv-edit">✏️ 編集</button><button class="btn danger" id="rv-del">削除</button></div>`);
+  $('#rv-edit', el).onclick = () => { closeModal(); const c = courseById(rec.courseId) || courseFromRec(rec); rec.totalOnly ? totalOnlyForm(c, null, rec) : scoreGridForm({ course: c, rec }); };
   $('#rv-go', el).onclick = () => reviewRound(rec);
   $('#rv-del', el).onclick = async () => { closeModal(); if (await confirmBox('このラウンド記録を削除しますか？', '削除')) { db.rounds = db.rounds.filter(r => r.id !== rec.id); db.shots = db.shots.filter(s => s.roundId !== rec.id); save(); renderRound(); } };
   if (autoAI && !rec.ai) reviewRound(rec);
@@ -703,10 +728,10 @@ function roundText(r) {
     const s = (r.scores || {})[n]; if (!holeScore(s)) return null;
     const tr = (r.track || {})[n] || [];
     const shots = tr.map(x => x.pen ? `[${x.pen} +1]` : `${clubById(x.clubId)?.name || '?'}${x.lie ? '(' + x.lie + 'から)' : ''}${x.dist != null ? ' ' + Math.round(x.dist) + 'y' : ''}${x.endLie ? '→' + x.endLie : ''}`).join(' / ');
-    return `${n}番 Par${parOf(r, n)}${r.sis && r.sis[n] ? ' HC' + r.sis[n] : ''}: ${holeScore(s)}打（パット${s.putts || 0}${s.pen ? ' ペナ' + s.pen : ''}${s.fw != null ? ' FW' + (s.fw ? '◯' : '×') : ''}）${shots ? ' ショット: ' + shots : ''}`;
+    return `${n}番 Par${parOf(r, n)}${r.sis && r.sis[n] ? ' HC' + r.sis[n] : ''}: ${holeScore(s)}打（パット${s.putts ?? '?'}${s.pen ? ' ペナ' + s.pen : ''}${s.fw != null ? ' FW' + (s.fw ? '◯' : '×') : ''}）${shots ? ' ショット: ' + shots : ''}`;
   }).filter(Boolean).join('\n');
   const w = r.weather;
-  return `日付: ${new Date(r.date).toLocaleDateString('ja-JP')}\n合計: ${st.strokes}（パー${st.par}に対し${sgn(st.diff)}）パット${st.putts} 3パット${st.three} ペナルティ${st.pen} FWキープ${st.fwPct ?? '-'}% パーオン${st.girPct}% Par3平均${st.par3 ? st.par3.toFixed(2) : '-'} Par4平均${st.par4 ? st.par4.toFixed(2) : '-'} Par5平均${st.par5 ? st.par5.toFixed(2) : '-'}\n${w ? `気象: ${WX(w.code)[1]} ${isNum(w.temp) ? Math.round(w.temp) + '℃' : ''} ${isNum(w.hum) ? '湿度' + w.hum + '%' : ''} 風${r1(w.speed)}m/s(${dirName(w.dir)}から${isNum(w.gust) ? ' 最大' + r1(w.gust) : ''})\n` : ''}ホール別:\n${holes}`;
+  return `日付: ${new Date(r.date).toLocaleDateString('ja-JP')}\n合計: ${st.strokes}（パー${st.par}に対し${sgn(st.diff)}）パット${st.putts} 3パット${st.three} ペナルティ${st.pen} FWキープ${st.fwPct ?? '-'}% パーオン${st.girPct ?? '-'}% Par3平均${st.par3 ? st.par3.toFixed(2) : '-'} Par4平均${st.par4 ? st.par4.toFixed(2) : '-'} Par5平均${st.par5 ? st.par5.toFixed(2) : '-'}\n${w ? `気象: ${WX(w.code)[1]} ${isNum(w.temp) ? Math.round(w.temp) + '℃' : ''} ${isNum(w.hum) ? '湿度' + w.hum + '%' : ''} 風${r1(w.speed)}m/s(${dirName(w.dir)}から${isNum(w.gust) ? ' 最大' + r1(w.gust) : ''})\n` : ''}ホール別:\n${holes}`;
 }
 async function reviewRound(rec) {
   const box = $('#rv-ai'); if (box) box.innerHTML = '<div class="ai-answer muted">AIが分析中…（20〜40秒ほど）</div>';
@@ -717,7 +742,7 @@ async function reviewRound(rec) {
     const ans = await callClaude({
       system: 'あなたはツアー経験豊富なキャディ兼ゴルフコーチです。日本語で、データを根拠に具体的かつ前向きに総評します。見出しは【】で短く付け、箇条書き中心で700字程度。',
       maxTokens: 1800,
-      text: `${rec.courseName} のラウンドを総評してください。\n\n■今回のラウンド\n${roundText(rec)}\n\n■このコースの過去ラウンド（新しい順）\n${prevs.length ? prevs.slice(0, 5).map(r => { const s = roundStats(r); return `${new Date(r.date).toLocaleDateString('ja-JP')}: ${s.strokes}（パット${s.putts} ペナ${s.pen} FW${s.fwPct ?? '-'}% パーオン${s.girPct}%）`; }).join('\n') : 'なし（初めてのコース）'}\n${prevs.length ? `\n■前回のホール別詳細\n${roundText(prevs[0])}\n\n■過去のホール別平均打数\n${holeAvg}` : ''}\n\n■ハンディキャップ\nこのラウンドのスコア差: ${e && e.d ? e.d.diff : '算出対象外'}／現在のハンディキャップ指数(目安): ${hh.hi ?? '未算出'}\n\n■クラブ別飛距離\n${bagSummaryForAI()}\n\n次の構成で: 【総評】全体の評価をひとこと／【良かった点】／【スコアを落とした原因】データ根拠つき／【前回との比較】（初回なら省略）／【このコースの攻略メモ】次回注意すべきホールと狙い方を3つ／【練習テーマ】3つ`
+      text: `${rec.courseName} のラウンドを総評してください。\n\n■今回のラウンド\n${roundText(rec)}\n\n■このコースの過去ラウンド（新しい順）\n${prevs.length ? prevs.slice(0, 5).map(r => { const s = roundStats(r); return `${new Date(r.date).toLocaleDateString('ja-JP')}: ${s.strokes}（パット${s.putts} ペナ${s.pen} FW${s.fwPct ?? '-'}% パーオン${s.girPct ?? '-'}%）`; }).join('\n') : 'なし（初めてのコース）'}\n${prevs.length ? `\n■前回のホール別詳細\n${roundText(prevs[0])}\n\n■過去のホール別平均打数\n${holeAvg}` : ''}\n\n■ハンディキャップ\nこのラウンドのスコア差: ${e && e.d ? e.d.diff : '算出対象外'}／現在のハンディキャップ指数(目安): ${hh.hi ?? '未算出'}\n\n■クラブ別飛距離\n${bagSummaryForAI()}\n\n次の構成で: 【総評】全体の評価をひとこと／【良かった点】／【スコアを落とした原因】データ根拠つき／【前回との比較】（初回なら省略）／【このコースの攻略メモ】次回注意すべきホールと狙い方を3つ／【練習テーマ】3つ`
     });
     rec.ai = ans; save();
     if ($('#rv-ai')) { $('#rv-ai').innerHTML = `<div class="ai-answer">${esc(ans)}</div>`; $('#rv-go').textContent = 'もう一度総評してもらう'; }
@@ -798,6 +823,194 @@ function openCaddie(prefill = '') {
   $$('[data-q]', el).forEach(b => b.onclick = () => { $('#cq', el).value = b.dataset.q; ask(b.dataset.q); });
   $('#cask', el).onclick = () => ask($('#cq', el).value.trim());
   $('#cmic', el).onclick = async () => { const t = await listen(); if (t && $('#cq')) { $('#cq').value = t; ask(t); } };
+}
+
+
+/* ---------------- コース検索（OpenStreetMap / Nominatim） ---------------- */
+async function nominatimSearch(q) {
+  let r;
+  try { r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=15&accept-language=ja&q=${encodeURIComponent(q)}`, { headers: { Accept: 'application/json' } }); }
+  catch (e) { throw new Error('検索サービスに接続できませんでした（通信状況を確認してください）'); }
+  if (!r.ok) throw new Error('検索に失敗しました（' + r.status + '）。少し待ってからお試しください');
+  return r.json();
+}
+function searchCourseFlow(onDone, initial = '') {
+  const el = openModal(`<h2>🔍 コースを検索</h2>
+    <div class="row"><input id="cs-q" class="grow" value="${esc(initial)}" placeholder="例: 〇〇カントリー倶楽部" style="padding:11px;border:1px solid #cfd6d2;border-radius:10px;font-size:15px"><button class="btn" id="cs-go">検索</button></div>
+    <div id="cs-res" style="margin-top:10px"><p class="small muted">ゴルフ場の名前の一部でも検索できます（OpenStreetMapのデータ）。</p></div>
+    <button class="btn block ghost" id="cs-manual" style="margin-top:6px">見つからない場合：名前を入れて手動で作成</button>`);
+  const go = async () => {
+    const q = $('#cs-q', el).value.trim(); if (!q) return;
+    const box = $('#cs-res', el); box.innerHTML = '<p class="muted small">検索中…</p>';
+    try {
+      let res = await nominatimSearch(q), golf = res.filter(x => x.type === 'golf_course');
+      if (!golf.length && !/ゴルフ|golf|カントリー|CC|GC/i.test(q)) { res = await nominatimSearch(q + ' ゴルフ'); golf = res.filter(x => x.type === 'golf_course'); }
+      const list = golf.length ? golf : res.filter(x => x.boundingbox);
+      if (!$('#cs-res')) return;
+      if (!list.length) { box.innerHTML = '<div class="notice">見つかりませんでした。別の言い方（「カントリー」「CC」を外す等）で試すか、手動で作成してください。</div>'; return; }
+      box.innerHTML = list.slice(0, 12).map((x, i) => `<div class="list-item"><div class="grow"><b>${esc(x.name || x.display_name.split(',')[0])}</b><div class="small muted">${esc(x.display_name.split(',').slice(1, 4).join(','))}${x.type === 'golf_course' ? '' : '（ゴルフ場以外の可能性）'}</div></div><button class="btn small" data-i="${i}">読み込む</button></div>`).join('');
+      $$('[data-i]', box).forEach(b => b.onclick = async () => {
+        const x = list[+b.dataset.i], bb = x.boundingbox.map(Number), name = x.name || x.display_name.split(',')[0];
+        const ex = db.courses.find(c => c.name === name);
+        if (ex) { closeModal(); toast('保存済みのコースを使います'); onDone && onDone(ex); return; }
+        closeModal();
+        const c = await importOsmCourse({ name, bounds: { minlat: bb[0], maxlat: bb[1], minlon: bb[2], maxlon: bb[3] } }, { ask: false });
+        if (c && onDone) onDone(c);
+      });
+    } catch (e) { if ($('#cs-res')) box.innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
+  };
+  $('#cs-go', el).onclick = go;
+  $('#cs-q', el).onkeydown = e => { if (e.key === 'Enter') go(); };
+  $('#cs-manual', el).onclick = () => { const nm = $('#cs-q', el).value.trim(); closeModal(); createCourseForm({ name: nm, btn: '作成', onCreated: c => onDone && onDone(c) }); };
+  if (initial) go();
+}
+
+/* ---------------- 過去のスコア入力 ---------------- */
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const dateToISO = s => new Date((s || todayStr()) + 'T09:00:00').toISOString();
+const isoToDate = iso => { const d = new Date(iso); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+function courseFromRec(rec) { // コースが削除されていても編集できるように
+  const ns = Object.keys(rec.pars || {}).map(Number).sort((a, b) => a - b);
+  return { id: rec.courseId, name: rec.courseName, holes: ns.map(n => ({ n, par: rec.pars[n], si: rec.sis && rec.sis[n] || null })), rating: rec.rating, slope: rec.slope, _virtual: true };
+}
+function pastScoreFlow(state = {}) {
+  const st = Object.assign({ courseId: '', date: todayStr(), mode: 'hole' }, state);
+  const el = openModal(`<h2>📝 過去のスコアを入力</h2>
+    <button class="btn block accent" id="ps-cam">📷 スコアカードを撮影して読み取る</button>
+    <p class="small muted" style="margin:-2px 0 12px">紙のスコアカードやスコア管理アプリの画面を撮ると、AIがホールごとの打数・パットを読み取ります。</p>
+    <label class="f">コース<select id="ps-course"><option value="">選択してください</option>${db.courses.map(c => `<option value="${c.id}" ${c.id === st.courseId ? 'selected' : ''}>${esc(c.name)}（${c.holes.length}H）</option>`).join('')}</select></label>
+    <div class="grid2"><button class="btn small ghost" id="ps-search">🔍 コースを検索</button><button class="btn small ghost" id="ps-new">＋ 名前だけで作成</button></div>
+    <label class="f" style="margin-top:12px">プレー日<input type="date" id="ps-date" value="${esc(st.date)}" max="${todayStr()}"></label>
+    <div class="spread" style="margin-bottom:12px"><span class="small muted">入力方法</span><div class="seg" style="width:230px"><button data-m="hole" class="${st.mode === 'hole' ? 'on' : ''}">ホールごと</button><button data-m="total" class="${st.mode === 'total' ? 'on' : ''}">合計だけ</button></div></div>
+    <button class="btn block" id="ps-next">次へ</button>`);
+  const cur = () => ({ courseId: $('#ps-course', el).value, date: $('#ps-date', el).value || todayStr(), mode: st.mode });
+  $$('[data-m]', el).forEach(b => b.onclick = () => { st.mode = b.dataset.m; $$('[data-m]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  $('#ps-search', el).onclick = () => { const s = cur(); closeModal(); searchCourseFlow(c => pastScoreFlow({ ...s, courseId: c.id })); };
+  $('#ps-new', el).onclick = () => { const s = cur(); closeModal(); createCourseForm({ btn: '作成', onCreated: c => pastScoreFlow({ ...s, courseId: c.id }) }); };
+  $('#ps-cam', el).onclick = () => { const s = cur(); closeModal(); scorecardPhotoFlow(s); };
+  $('#ps-next', el).onclick = () => {
+    const s = cur(), c = courseById(s.courseId);
+    if (!c) { toast('コースを選んでください（無ければ検索か作成）'); return; }
+    closeModal();
+    if (s.mode === 'total') totalOnlyForm(c, s.date); else scoreGridForm({ course: c, date: s.date });
+  };
+}
+function totalOnlyForm(course, date, rec) {
+  const el = openModal(`<h2>${esc(course.name)}</h2>
+    <label class="f">プレー日<input type="date" id="to-date" value="${esc(rec ? isoToDate(rec.date) : date)}" max="${todayStr()}"></label>
+    <div class="grid2"><label class="f">合計スコア<input id="to-total" inputmode="numeric" value="${rec ? rec.totalOnly : ''}" placeholder="例 92"></label><label class="f">合計パット（任意）<input id="to-putts" inputmode="numeric" value="${rec && isNum(rec.puttsTotal) ? rec.puttsTotal : ''}"></label></div>
+    <p class="small muted">合計だけの記録はハンディキャップの計算に「推定」として使われます。ホールごとに入れると、スタッツやAI総評がより詳しくなります。</p>
+    <button class="btn block" id="to-save">保存</button>`);
+  $('#to-save', el).onclick = () => {
+    const tot = num($('#to-total', el).value);
+    if (!tot || tot < course.holes.length || tot > course.holes.length * 12) { toast('合計スコアを確認してください'); return; }
+    const r = rec || { id: uid(), track: {}, scores: {}, past: true };
+    Object.assign(r, { courseId: course.id, courseName: course.name, date: dateToISO($('#to-date', el).value), totalOnly: tot, puttsTotal: num($('#to-putts', el).value), pars: Object.fromEntries(course.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(course.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: course.rating || null, slope: course.slope || null });
+    if (!rec) db.rounds.push(r);
+    save(); closeModal(); toast('保存しました'); renderRound(); showRoundDetail(r);
+  };
+}
+function scoreGridForm({ course, date, rec, values }) {
+  const v = n => {
+    if (values && values[n]) return values[n];
+    const s = rec && rec.scores && rec.scores[n]; if (!s) return {};
+    return { strokes: holeScore(s), putts: s.putts, pen: s.pen, fw: s.fw };
+  };
+  const parOfHole = h => (rec && rec.pars && rec.pars[h.n]) || (values && values[h.n] && values[h.n].par) || h.par;
+  const el = openModal(`<h2>${esc(course.name)}</h2>
+    <label class="f">プレー日<input type="date" id="gi-date" value="${esc(rec ? isoToDate(rec.date) : (date || todayStr()))}" max="${todayStr()}"></label>
+    <p class="small muted" style="margin:0 0 6px">打数だけでもOK。パット・ペナ・FWは分かる範囲で。FWはティーショットがフェアウェイに残ったら◯。</p>
+    <div class="scroll-x"><table class="t gi"><tr><th>H</th><th>Par</th><th>打数</th><th>パット</th><th>ペナ</th><th>FW</th></tr>
+    ${course.holes.map(h => { const x = v(h.n), p = parOfHole(h); return `<tr data-n="${h.n}"><td><b>${h.n}</b></td>
+      <td><select class="gi-par">${[3, 4, 5, 6].map(q => `<option ${q === p ? 'selected' : ''}>${q}</option>`).join('')}</select></td>
+      <td><input class="gi-s" inputmode="numeric" value="${x.strokes ?? ''}"></td>
+      <td><input class="gi-p" inputmode="numeric" value="${x.putts ?? ''}"></td>
+      <td><input class="gi-pen" inputmode="numeric" value="${x.pen ? x.pen : ''}"></td>
+      <td><select class="gi-fw"><option value="">—</option><option value="1" ${x.fw === true ? 'selected' : ''}>◯</option><option value="0" ${x.fw === false ? 'selected' : ''}>×</option></select></td></tr>`; }).join('')}
+    </table></div>
+    <p id="gi-tot" style="text-align:center;font-weight:800;font-size:17px;margin:10px 0"></p>
+    <button class="btn block" id="gi-save">保存</button>`);
+  const calc = () => {
+    let s = 0, p = 0, par = 0, n = 0, pn = 0;
+    $$('tr[data-n]', el).forEach(tr => { const v1 = num($('.gi-s', tr).value); if (v1) { s += v1; n++; par += +$('.gi-par', tr).value; } const v2 = num($('.gi-p', tr).value); if (v2 != null && v1) { p += v2; pn++; } });
+    $('#gi-tot', el).textContent = n ? `${n}ホール 合計 ${s}（${sgn(s - par)}）${pn ? '・パット ' + p : ''}` : '打数を入力してください';
+  };
+  const tbl = $('table.gi', el); tbl.addEventListener('input', calc); tbl.addEventListener('change', calc); calc();
+  // 入力したら次のマスへ（打数→パット→次のホールの打数）
+  $$('.gi-s, .gi-p', el).forEach(inp => inp.addEventListener('input', () => {
+    const val = inp.value; if (!/^\d$/.test(val) || (inp.classList.contains('gi-s') && val === '1')) return;
+    const tr = inp.closest('tr'), next = inp.classList.contains('gi-s') ? $('.gi-p', tr) : (tr.nextElementSibling && $('.gi-s', tr.nextElementSibling));
+    if (next) next.focus();
+  }));
+  $('#gi-save', el).onclick = () => {
+    const scores = {}, pars = {}; let bad = 0;
+    $$('tr[data-n]', el).forEach(tr => {
+      const n = +tr.dataset.n, par = +$('.gi-par', tr).value, s = num($('.gi-s', tr).value), p = num($('.gi-p', tr).value), pen = num($('.gi-pen', tr).value) || 0, fw = $('.gi-fw', tr).value;
+      pars[n] = par;
+      if (!s) return;
+      if (s < 1 || s > 15 || (p != null && p >= s) || pen >= s) { bad++; return; }
+      scores[n] = { shots: s - (p || 0) - pen, putts: p, pen, fw: par >= 4 && fw !== '' ? fw === '1' : null };
+    });
+    if (bad) { toast(`入力がおかしいホールが${bad}つあります（パットやペナが打数以上など）`); return; }
+    if (!Object.keys(scores).length) { toast('打数を入力してください'); return; }
+    const real = !course._virtual && courseById(course.id);
+    if (real) course.holes.forEach(h => { if (pars[h.n]) h.par = pars[h.n]; });
+    const r = rec || { id: uid(), track: {}, past: true };
+    delete r.totalOnly; delete r.puttsTotal;
+    Object.assign(r, { courseId: course.id, courseName: course.name, date: dateToISO($('#gi-date', el).value), scores, pars, sis: Object.fromEntries(course.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: course.rating || null, slope: course.slope || null });
+    if (!rec) db.rounds.push(r);
+    save(); closeModal(); toast('保存しました'); renderRound(); showRoundDetail(r);
+  };
+}
+async function scorecardPhotoFlow(state) {
+  const file = await pickFile('#file-image'); if (!file) return;
+  try {
+    showLoading('画像を準備中…');
+    const b64 = await fileToJpegB64(file, 2000, 0.9);
+    showLoading('AIがスコアカードを読み取り中…');
+    const txt = await callClaude({
+      system: 'あなたはゴルフのスコアカードを正確に書き起こすアシスタントです。JSONのみを出力します。',
+      images: [b64], maxTokens: 4000,
+      text: `この画像はゴルフのスコアカード（紙、またはスコア管理アプリの画面）です。読み取って次の形式のJSONだけを返してください。
+{"course":"コース名（読めなければnull）","date":"YYYY-MM-DD（読めなければnull）","rating":数値|null,"slope":数値|null,
+ "holes":[{"n":1,"par":4,"hdcp":ハンディキャップ順位|null,"yards":数値|null}],
+ "players":[{"name":"名前（無ければ「プレーヤー1」など）","scores":[{"n":1,"strokes":打数,"putts":パット数|null}]}]}
+ルール: OUT/IN/TOTALなどの合計列は含めない。パット数が打数と並べて書かれている場合（例「5/2」「5(2)」や小さい数字）はputtsに入れる。+1や−1のようにパーとの差で書かれている場合は打数に直す。空欄のホールは含めない。読めない値はnull。`
+    });
+    hideLoading();
+    const d = parseJSON(txt);
+    const players = (d.players || []).filter(p => p.scores && p.scores.some(s => isNum(s.strokes)));
+    if (!players.length) { toast('スコアを読み取れませんでした。カード全体がはっきり写るように撮影してください', 5000); return; }
+    const use = p => applyScorecard(d, p, state);
+    if (players.length === 1) return use(players[0]);
+    const el = openModal(`<h2>どのプレーヤーのスコアですか？</h2>${players.map((p, i) => `<div class="list-item"><div class="grow"><b>${esc(p.name)}</b><div class="small muted">合計 ${p.scores.reduce((a, s) => a + (s.strokes || 0), 0)}</div></div><button class="btn small" data-i="${i}">これ</button></div>`).join('')}`);
+    $$('[data-i]', el).forEach(b => b.onclick = () => { closeModal(); use(players[+b.dataset.i]); });
+  } catch (e) { hideLoading(); toast(e.message, 5000); }
+}
+function applyScorecard(d, player, state) {
+  let course = courseById(state && state.courseId);
+  const cardHoles = (d.holes || []).filter(h => isNum(h.n));
+  if (!course && d.course) course = db.courses.find(c => c.name === d.course || c.name.includes(d.course) || d.course.includes(c.name));
+  if (!course) {
+    const nHoles = Math.max(cardHoles.length, ...player.scores.map(s => s.n || 0)) > 9 ? 18 : 9;
+    course = { id: uid(), name: d.course || 'スコアカードのコース', source: 'manual', holes: Array.from({ length: nHoles }, (_, i) => { const h = cardHoles.find(x => x.n === i + 1) || {}; return { n: i + 1, par: isNum(h.par) ? h.par : 4, si: isNum(h.hdcp) ? h.hdcp : null, tee: null, green: null, greenPoly: null, line: null }; }), greens: [], fairways: [], tees: [], hazards: [], rating: isNum(d.rating) ? d.rating : null, slope: isNum(d.slope) ? d.slope : null, created: Date.now() };
+    db.courses.push(course); save();
+    toast(`コース「${course.name}」を作成しました（名前はあとで✏️から変更できます）`, 4500);
+  } else {
+    // カードの方がホールが多い場合（OSMのホール情報が一部だけ等）は不足分を追加
+    const ns = new Set([...cardHoles.map(h => h.n), ...player.scores.map(s => s.n)].filter(isNum));
+    ns.forEach(n => { if (!course.holes.some(x => x.n === n)) { const h = cardHoles.find(x => x.n === n) || {}; course.holes.push({ n, par: isNum(h.par) ? h.par : 4, si: isNum(h.hdcp) ? h.hdcp : null, tee: null, green: null, greenPoly: null, line: null }); } });
+    course.holes.sort((a, b) => a.n - b.n);
+    cardHoles.forEach(h => { const ch = course.holes.find(x => x.n === h.n); if (ch && isNum(h.hdcp) && !ch.si) ch.si = h.hdcp; if (ch && isNum(h.par) && !ch.green) ch.par = h.par; });
+    if (!course.rating && isNum(d.rating)) course.rating = d.rating;
+    if (!course.slope && isNum(d.slope)) course.slope = d.slope;
+    save();
+  }
+  const values = {};
+  player.scores.forEach(s => { if (isNum(s.n) && isNum(s.strokes)) { const h = cardHoles.find(x => x.n === s.n); values[s.n] = { strokes: s.strokes, putts: isNum(s.putts) ? s.putts : null, par: h && isNum(h.par) ? h.par : undefined }; } });
+  const date = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : (state && state.date) || todayStr();
+  toast('読み取り結果を確認して、間違いがあれば直してから保存してください', 4500);
+  scoreGridForm({ course, date, values });
 }
 
 /* ---------------- 起動 ---------------- */

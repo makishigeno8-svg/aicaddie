@@ -160,3 +160,8 @@ table.sc td.sc-bogey{background:#dbeafe;color:#1d4ed8;font-weight:700}
 table.sc td.sc-double{background:#bfdbfe;color:#1e3a8a;font-weight:800}
 details summary{cursor:pointer}
 .stepper.sm{justify-content:center;gap:4px}.stepper.sm button{width:34px;height:40px;font-size:18px;border-radius:10px}.stepper.sm b{font-size:24px;min-width:24px}
+
+table.gi td{padding:3px 2px;text-align:center}
+table.gi th{text-align:center}
+table.gi input{width:44px;padding:7px 2px;text-align:center;font-size:15px}
+table.gi select{padding:6px 2px;font-size:14px}
