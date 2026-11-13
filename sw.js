@@ -1,5 +1,5 @@
 // AIキャディ Service Worker：アプリ本体をキャッシュして電波の弱いコースでも起動できるようにする
-const VERSION = 'aicaddie-v1.0.1';
+const VERSION = 'aicaddie-v1.0.2';
 const SHELL = ['./', './index.html', './style.css', './app.js', './round.js', './manifest.webmanifest',
   './lib/leaflet.js', './lib/leaflet.css', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', e => {

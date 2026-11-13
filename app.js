@@ -18,7 +18,7 @@ const Bridge = window.AndroidBridge || null;
 // ---------- 保存 ----------
 const KEY = 'aicaddie.v1';
 const defaultDB = () => ({
-  settings: { apiKey: '', model: 'claude-sonnet-5-5', unit: 'yd', voice: true, competition: false, mapProvider: 'esri', googleKey: '' },
+  settings: { apiKey: '', model: 'claude-sonnet-5-5', unit: 'yd', voice: true, voiceName: '', voicePitch: 1.2, voiceRate: 1.05, competition: false, mapProvider: 'esri', googleKey: '' },
   clubs: [], shots: [], sessions: [], courses: [], rounds: [],
   activeRound: null, activeSession: null
 });
@@ -115,11 +115,30 @@ async function fileToJpegB64(file, max = 1568, q = 0.85) {
 }
 
 // ---------- 音声 ----------
+// キャディの声：端末の日本語音声から女性の声を優先して選ぶ（設定で変更可）
+const FEMALE_RE = /female|女性|nanami|kyoko|haruka|ayumi|mizuki|sayaka|o-ren|htm|jab|aoi|mayu|shiori/i;
+const MALE_RE = /male|男性|ichiro|keita|otoya|hattori|daichi|naoki|jac|jad/i;
+const isMaleName = n => MALE_RE.test(n.replace(/female/ig, ''));
+function jaVoices() { try { return speechSynthesis.getVoices().filter(v => /^ja/i.test(v.lang)); } catch (e) { return []; } }
+function pickVoice() {
+  const vs = jaVoices(); if (!vs.length) return null;
+  const pref = db.settings.voiceName;
+  if (pref) { const v = vs.find(x => x.name === pref); if (v) return v; }
+  return vs.find(v => FEMALE_RE.test(v.name) && !isMaleName(v.name)) || vs.find(v => !isMaleName(v.name)) || vs[0];
+}
+try { speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged = () => { }; } catch (e) { }
 function speak(text) {
   if (!db.settings.voice || !text) return;
   const t = text.replace(/[#*_`>]/g, '');
-  if (Bridge && Bridge.speak) { Bridge.speak(t); return; }
-  try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t); u.lang = 'ja-JP'; u.rate = 1.05; speechSynthesis.speak(u); } catch (e) { }
+  const pitch = isNum(db.settings.voicePitch) ? db.settings.voicePitch : 1.2, rate = isNum(db.settings.voiceRate) ? db.settings.voiceRate : 1.05;
+  if (Bridge && Bridge.speak) { if (Bridge.setVoice) Bridge.setVoice(pitch, rate); Bridge.speak(t); return; }
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t); u.lang = 'ja-JP';
+    try { const v = pickVoice(); if (v) u.voice = v; } catch (e) { }
+    u.pitch = pitch; u.rate = rate;
+    speechSynthesis.speak(u);
+  } catch (e) { }
 }
 function stopSpeak() { if (Bridge && Bridge.stopSpeak) Bridge.stopSpeak(); else try { speechSynthesis.cancel(); } catch (e) { } }
 let voiceResolver = null;
@@ -685,6 +704,12 @@ function renderSettings() {
       <div class="switch"><span>距離の単位</span><select id="s-unit" style="padding:6px;border-radius:8px"><option value="yd">ヤード</option><option value="m">メートル</option></select></div>
       <div class="switch"><span>地図の種類</span><select id="s-map" style="padding:6px;border-radius:8px"><option value="esri">航空写真（Esri・無料）</option><option value="google">Google衛星写真</option><option value="osm">地図（OSM）</option></select></div>
       <div class="switch"><span>AIの回答を読み上げる</span><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}></div>
+      <div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <label class="f" style="margin-bottom:6px">キャディの声<select id="s-vname"><option value="">おまかせ（若い女性の声を自動で選択）</option></select></label>
+        <div class="grid2"><label class="f">声の高さ <b id="s-pitch-v"></b><input type="range" id="s-pitch" min="0.8" max="1.6" step="0.05" style="padding:0"></label>
+        <label class="f">話す速さ <b id="s-rate-v"></b><input type="range" id="s-rate" min="0.8" max="1.4" step="0.05" style="padding:0"></label></div>
+        <button class="btn small light" id="s-vtest">▶ 試しに聞く</button>
+      </div>
       <div class="switch" style="border:0"><span>競技モード<br><span class="small muted">AIの番手・攻め方アドバイスを無効化</span></span><input type="checkbox" id="s-comp" ${s.competition ? 'checked' : ''}></div>
     </div>
     <div class="card">
@@ -709,6 +734,19 @@ function renderSettings() {
   $('#s-model').onchange = e => { s.model = e.target.value; save(); };
   $('#s-unit').onchange = e => { s.unit = e.target.value; save(); };
   $('#s-voice').onchange = e => { s.voice = e.target.checked; save(); };
+  const fillVoices = () => {
+    const sel = $('#s-vname'); if (!sel) return;
+    const vs = jaVoices(), auto = pickVoice();
+    sel.innerHTML = `<option value="">おまかせ（若い女性の声を自動で選択）${auto && !s.voiceName ? '：' + esc(auto.name) : ''}</option>` + vs.map(v => `<option value="${esc(v.name)}" ${s.voiceName === v.name ? 'selected' : ''}>${esc(v.name)}${FEMALE_RE.test(v.name) && !isMaleName(v.name) ? '（女性）' : isMaleName(v.name) ? '（男性）' : ''}</option>`).join('');
+    if (Bridge && Bridge.speak) { sel.disabled = true; sel.options[0].text = '端末の音声設定を使用'; }
+  };
+  fillVoices(); try { speechSynthesis.onvoiceschanged = fillVoices; } catch (e) { }
+  const pv = isNum(s.voicePitch) ? s.voicePitch : 1.2, rv = isNum(s.voiceRate) ? s.voiceRate : 1.05;
+  $('#s-pitch').value = pv; $('#s-rate').value = rv; $('#s-pitch-v').textContent = pv.toFixed(2); $('#s-rate-v').textContent = rv.toFixed(2);
+  $('#s-vname').onchange = e => { s.voiceName = e.target.value; save(); };
+  $('#s-pitch').oninput = e => { s.voicePitch = +e.target.value; $('#s-pitch-v').textContent = s.voicePitch.toFixed(2); save(); };
+  $('#s-rate').oninput = e => { s.voiceRate = +e.target.value; $('#s-rate-v').textContent = s.voiceRate.toFixed(2); save(); };
+  $('#s-vtest').onclick = () => { const on = s.voice; s.voice = true; speak('残り150ヤード、少しアゲンストです。7番アイアンでグリーンの真ん中を狙いましょう！'); s.voice = on; };
   $('#s-comp').onchange = e => { s.competition = e.target.checked; save(); };
   $('#s-gtest').onclick = async () => {
     s.googleKey = $('#s-gkey').value.trim(); s.gSession = null; save();
