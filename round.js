@@ -116,8 +116,6 @@ function renderRoundStart() {
       <button class="btn block" id="find-course">📡 近くのゴルフ場を探す（GPS）</button>
       <button class="btn block ghost" id="search-course">🔍 ゴルフ場名で探す（全国）</button>
       <button class="btn block ghost" id="manual-course">✏️ 手動でコースを作成</button>
-      <button class="btn block ghost" id="demo-start" style="border-style:dashed">🎬 デモラウンド（サンプルコースで操作を試す）</button>
-      ${db.courses.some(c => c.demo) ? '<button class="btn block danger small" id="demo-del">デモのデータを削除</button>' : ''}
       <button class="btn block light" id="past-score">📝 過去のスコアを入力（スコアカード撮影も可）</button>
       <p class="small muted" style="margin:4px 0 0;line-height:1.6">ゴルフ場の中で「近くのゴルフ場を探す」を押すと、OpenStreetMapからホール・グリーン・フェアウェイ・バンカー・池を読み込みます。</p>
     </div>
@@ -129,8 +127,7 @@ function renderRoundStart() {
   $('#manual-course').onclick = manualCourseFlow;
   $('#search-course').onclick = () => searchCourseFlow(async c => { if (await confirmBox(`「${c.name}」でラウンドを開始しますか？`, '開始')) startRound(c.id); else renderRoundStart(); });
   $('#past-score').onclick = () => pastScoreFlow();
-  $('#demo-start').onclick = startDemo;
-  if ($('#demo-del')) $('#demo-del').onclick = async () => { if (await confirmBox('デモのコース・ラウンド・ショット記録をすべて削除しますか？（あなたのデータは消えません）', '削除')) deleteDemo(); };
+
   $$('[data-start]', el).forEach(b => b.onclick = () => startRound(b.dataset.start));
   $$('[data-editc]', el).forEach(b => b.onclick = () => editCourse(courseById(b.dataset.editc), renderRoundStart));
   $$('[data-rd]', el).forEach(b => b.onclick = () => showRoundDetail(db.rounds.find(r => r.id === b.dataset.rd)));
@@ -148,8 +145,7 @@ function showHandicapDetail() {
 
 /* ---------------- コース取得・作成・編集 ---------------- */
 /* ---------------- テストモード（PCで試す・擬似GPS） ---------------- */
-const isDemoCourse = () => { const c = curRound() && curCourse(); return !!(c && c.demo); };
-const testMode = () => !!db.settings.testMode || isDemoCourse();
+const testMode = () => !!db.settings.testMode;
 function testPosGuess() {
   if (ui.pos) return { lat: ui.pos.lat, lng: ui.pos.lng, acc: 3 };
   const h = curHole && curRound() ? curHole() : null;
@@ -435,8 +431,6 @@ async function coursePrep(course, idx = 0, after) {
 }
 function startPlay() {
   if (!map) initMap();
-  if (isDemoCourse()) { Object.values(baseLayers).forEach(l => map.hasLayer(l) && map.removeLayer(l)); map.getContainer().style.background = '#2f5e2c'; ui.demoBase = true; }
-  else if (ui.demoBase) { ui.demoBase = false; map.getContainer().style.background = ''; setBase(db.settings.mapProvider || 'esri'); }
   setTimeout(() => map.invalidateSize(), 50);
   keepAwake(true);
   renderTestBar();
@@ -524,13 +518,6 @@ const BASE_LABEL = { esri: '航空写真（Esri・無料）', google: 'Google衛
 
 function drawCourse() {
   const c = curCourse(); mapLayers.course.clearLayers(); if (!c) return;
-  if (c.demo) {
-    (c.roughs || []).forEach(p => L.polygon(p, { stroke: false, fillColor: '#3f7d3a', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
-    (c.fairways || []).forEach(p => L.polygon(p, { stroke: false, fillColor: '#6abf4b', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
-    (c.hazards || []).forEach(h => L.polygon(h.p, { color: h.t === 'water' ? '#1d4ed8' : '#c9b27a', weight: 1, fillColor: h.t === 'water' ? '#3b82f6' : '#f1e3b5', fillOpacity: .95, interactive: false }).addTo(mapLayers.course));
-    (c.greens || []).forEach(g => L.polygon(g, { color: '#166534', weight: 1, fillColor: '#8ee06a', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
-    return;
-  }
   (c.hazards || []).forEach(h => L.polygon(h.p, { color: h.t === 'water' ? '#1d4ed8' : '#b59545', weight: 1, fillColor: h.t === 'water' ? '#3b82f6' : '#e9d8a6', fillOpacity: .4, interactive: false }).addTo(mapLayers.course));
   (c.greens || []).forEach(g => L.polygon(g, { color: '#15803d', weight: 1, fillColor: '#4ade80', fillOpacity: .3, interactive: false }).addTo(mapLayers.course));
 }
@@ -1026,7 +1013,7 @@ function prevRoundOnCourse(rec) {
 }
 function endRound() {
   const r = curRound(), c = curCourse();
-  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null, cond: r.cond || null, pins: r.pins || {}, demo: !!(r.demo || c.demo) };
+  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null, cond: r.cond || null, pins: r.pins || {} };
   db.rounds.push(rec); db.activeRound = null; save(); stopPlay();
   const st = roundStats(rec), prev = prevRoundOnCourse(rec), ps = prev && roundStats(prev), hh = handicapHistory(), e = hh.out.find(x => x.r.id === rec.id);
   const el = openModal(`<h2>お疲れさまでした！</h2>
@@ -1669,68 +1656,19 @@ function applyScorecard(d, player, state) {
 }
 
 
-/* ---------------- デモラウンド（サンプルコースで操作を試す） ---------------- */
-function createDemo() {
-  const O = [35.36, 138.73], mLat = 111195, mLng = 111195 * Math.cos(O[0] * Math.PI / 180), Y = 0.9144;
-  const off = (p, dx, dy) => [Math.round((p[0] + dy / mLat) * 1e6) / 1e6, Math.round((p[1] + dx / mLng) * 1e6) / 1e6];
-  const go = (p, deg, m) => off(p, Math.sin(deg * Math.PI / 180) * m, Math.cos(deg * Math.PI / 180) * m);
-  const ellipse = (c, rx, ry, rot = 0, n = 18) => Array.from({ length: n }, (_, i) => { const t = i / n * 2 * Math.PI, x = Math.cos(t) * rx, y = Math.sin(t) * ry, q = rot * Math.PI / 180; return off(c, x * Math.cos(q) - y * Math.sin(q), x * Math.sin(q) + y * Math.cos(q)); });
-  const buffer = (line, w) => { const Lp = [], Rp = []; for (let i = 0; i < line.length; i++) { const a = line[Math.max(0, i - 1)], b = line[Math.min(line.length - 1, i + 1)], dx = (b[1] - a[1]) * mLng, dy = (b[0] - a[0]) * mLat, len = Math.hypot(dx, dy) || 1, nx = -dy / len * w, ny = dx / len * w; Lp.push(off(line[i], nx, ny)); Rp.push(off(line[i], -nx, -ny)); } return [...Lp, ...Rp.reverse()]; };
-  let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const PARS = [4, 4, 3, 5, 4, 4, 3, 4, 5, 4, 3, 4, 5, 4, 4, 3, 5, 4], SIS = [7, 3, 15, 1, 11, 5, 17, 9, 13, 8, 16, 2, 12, 6, 4, 18, 10, 14];
-  const holes = [], fairways = [], roughs = [], hazards = []; let start = O;
-  PARS.forEach((par, i) => {
-    if (i === 9) start = off(O, 900, -150);
-    const head = ((i % 9) * 40 + (i >= 9 ? 180 : 0)) % 360, tee = go(start, head + 60, 45);
-    const len = par === 3 ? 150 + rnd() * 40 : par === 4 ? 340 + rnd() * 80 : 480 + rnd() * 60, dog = (rnd() - 0.5) * 50;
-    let line;
-    if (par === 3) line = [tee, go(tee, head, len * Y)];
-    else if (par === 4) { const c = go(tee, head, 235 * Y); line = [tee, c, go(c, head + dog, (len - 235) * Y)]; }
-    else { const c1 = go(tee, head, 260 * Y), c2 = go(c1, head + dog, 170 * Y); line = [tee, c1, c2, go(c2, head - dog * 0.5, (len - 430) * Y)]; }
-    const g = line[line.length - 1], gp = ellipse(g, 15 + rnd() * 5, 11 + rnd() * 4, head);
-    holes.push({ n: i + 1, par, si: SIS[i], tee, line, green: centroid(gp), greenPoly: gp, slope: i % 4 === 0 ? ['受け（奥が高い）'] : [] });
-    roughs.push(buffer(line, 36));
-    if (par > 3) fairways.push(buffer([go(tee, head, 110), ...line.slice(1, -1), go(g, bearing(line[line.length - 2], g) + 180, 25)], 17));
-    hazards.push({ t: 'bunker', p: ellipse(go(g, head + 215, 22), 8, 5, head + 60) });
-    if (rnd() > 0.4) hazards.push({ t: 'bunker', p: ellipse(go(g, head + 140, 21), 7, 5, head - 50) });
-    if (par > 3) hazards.push({ t: 'bunker', p: ellipse(go(line[1], head + (rnd() > 0.5 ? 90 : -90), 26), 12, 7, head) });
-    if (rnd() > 0.6) hazards.push({ t: 'water', p: ellipse(go(par === 3 ? go(tee, head, len * Y * 0.6) : line[1], head + (rnd() > 0.5 ? 80 : -80), 45), 20, 42, head) });
-    start = g;
-  });
-  const course = { id: 'demo-course', demo: true, name: '🎬 デモカントリー倶楽部', source: 'demo', pref: 'デモ', holes, greens: holes.map(h => h.greenPoly), fairways, roughs, tees: [], hazards, rating: 72.4, slope: 131, center: O, created: Date.now(), lastCond: { tee: 'レギュラー', stimp: 9.5, firm: '普通', memo: '' } };
-  db.courses = db.courses.filter(c => c.id !== course.id); db.courses.push(course);
-  // クラブが無ければ標準セット
-  if (bagClubs().filter(c => c.type !== 'putter').length < 5) PRESET.forEach(([name, type, loft, carry]) => { if (!db.clubs.some(c => clubKey(c.name) === clubKey(name))) addClub({ id: uid(), name, type, loft, manualCarry: carry, brand: '', model: '', demo: true }); });
-  // 過去ラウンド3回（前回比較・総評・ハンデを試せるように）
-  const pars = Object.fromEntries(holes.map(h => [h.n, h.par])), sis = Object.fromEntries(holes.map(h => [h.n, h.si]));
-  db.rounds = db.rounds.filter(x => !x.demo);
-  [95, 91, 89].forEach((target, k) => {
-    const scores = {}; let tot = 0;
-    holes.forEach(h => { const putts = 1 + Math.round(rnd() * 1.6), extra = Math.round(rnd() * 2.2), pen = rnd() < .07 ? 1 : 0, st = h.par + extra; scores[h.n] = { shots: Math.max(1, st - putts - pen), putts, pen, fw: h.par > 3 ? rnd() < .5 : null }; tot += Math.max(1, st - putts - pen) + putts + pen; });
-    let d = target - tot, i = 0; while (d !== 0 && i < 300) { const s = scores[1 + (i * 7) % 18]; if (d > 0) { s.shots++; d--; } else if (s.shots > 1) { s.shots--; d++; } i++; }
-    db.rounds.push({ id: 'demo-r' + k, demo: true, courseId: course.id, courseName: course.name, date: new Date(Date.now() - (40 - k * 12) * 86400000).toISOString(), scores, track: {}, pars, sis, rating: course.rating, slope: course.slope, weather: { temp: 15 + k, hum: 60, code: 1, speed: 3, dir: 200, gust: 5, pres: 1010 } });
-  });
-  save();
-  return course;
-}
-function startDemo() {
-  const c = createDemo();
-  ui.pos = null; ui.testStep = 0;
-  db.activeRound = { id: 'demo-now', demo: true, courseId: c.id, date: new Date().toISOString(), hole: 0, scores: {}, track: {}, cond: c.lastCond, pins: {} };
-  save(); renderRound();
-  setTimeout(() => toast('デモです。「🚶 次の地点へ」で歩き、「ショット」でクラブを選んで記録してみてください', 5000), 600);
-}
-function deleteDemo() {
-  if (db.activeRound && db.activeRound.demo) { db.activeRound = null; stopPlay(); }
-  const ids = new Set(db.rounds.filter(r => r.demo || r.courseId === 'demo-course').map(r => r.id));
-  db.rounds = db.rounds.filter(r => !ids.has(r.id));
-  db.shots = db.shots.filter(s => !ids.has(s.roundId) && s.roundId !== 'demo-now');
+/* ---------------- 以前のデモ機能のデータを掃除（本番データは残す） ---------------- */
+function cleanupDemoData() {
+  const hasDemo = db.courses.some(c => c.demo) || db.rounds.some(x => x.demo) || db.clubs.some(c => c.demo) || (db.activeRound && db.activeRound.demo);
+  if (!hasDemo) return;
+  if (db.activeRound && db.activeRound.demo) db.activeRound = null;
+  const ids = new Set(db.rounds.filter(x => x.demo || x.courseId === 'demo-course').map(x => x.id)); ids.add('demo-now');
+  db.rounds = db.rounds.filter(x => !ids.has(x.id));
+  db.shots = db.shots.filter(s => !ids.has(s.roundId));
   db.courses = db.courses.filter(c => !c.demo);
-  const demoClubs = new Set(db.clubs.filter(c => c.demo).map(c => c.id));
-  if (demoClubs.size) { db.clubs = db.clubs.filter(c => !c.demo); db.shots = db.shots.filter(s => !demoClubs.has(s.clubId)); }
-  ui.pos = null; save(); toast('デモのデータをすべて削除しました'); renderRound();
+  const dc = new Set(db.clubs.filter(c => c.demo).map(c => c.id));
+  if (dc.size) { db.clubs = db.clubs.filter(c => !dc.has(c.id)); db.shots = db.shots.filter(s => !dc.has(s.clubId)); (db.bagSets || []).forEach(s => s.clubIds = s.clubIds.filter(id => !dc.has(id))); }
+  flushSave();
 }
-
 /* ---------------- 起動 ---------------- */
 window.addEventListener('online', () => maybeFetchEnv());
 document.addEventListener('visibilitychange', () => {
@@ -1739,6 +1677,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.__installPrompt = e; const c = document.getElementById('install-card'); if (c) c.hidden = false; });
 (async function boot() {
   try { const raw = await IDB.get(KEY); if (raw) db = mergeDB(JSON.parse(raw)); else if (db.clubs.length || db.rounds.length) flushSave(); } catch (e) { }
+  try { cleanupDemoData(); } catch (e) { }
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
   switchTab('round');
   if (!db.settings.apiKey && !db.clubs.length) setTimeout(() => toast('ようこそ！まず「設定」でAPIキー、「クラブ」でクラブを登録しましょう', 5000), 600);
