@@ -1241,6 +1241,28 @@ function loadCourseIndex() {
         return (courseIndex = buildIndex(j.courses, j.updated));
       } catch (e) { }
     }
+    // 予備：端末に保存した一覧 → 無ければOpenStreetMapから直接作成（初回のみ・30〜60秒）
+    try {
+      const cached = await IDB.get('courses-jp');
+      if (cached && cached.courses && Date.now() - cached.at < 60 * 86400000) return (courseIndex = buildIndex(cached.courses, cached.updated));
+    } catch (e) { }
+    try {
+      const st = document.getElementById('cs-status'); if (st) st.textContent = '全国のゴルフ場一覧を作成中…（初回のみ・30〜60秒）';
+      const j = await overpass('[out:json][timeout:180];area["ISO3166-1"="JP"][admin_level=2]->.jp;(way["leisure"="golf_course"](area.jp);relation["leisure"="golf_course"](area.jp););out tags center bb;');
+      const seen = new Set(), list = [];
+      (j.elements || []).forEach(e => {
+        const t = e.tags || {}, nm = t['name:ja'] || t.name, c = e.center, b = e.bounds;
+        if (!nm || !c || !b || /練習場|ミニゴルフ|パターゴルフ/.test(nm) || seen.has(nm + c.lat.toFixed(2))) return;
+        if (distM({ lat: b.minlat, lng: b.minlon }, { lat: b.maxlat, lng: b.maxlon }) < 250) return;
+        seen.add(nm + c.lat.toFixed(2));
+        list.push([nm, t['name:ja-Hira'] || t['name:ja-Kana'] || '', t['addr:province'] || '', c.lat, c.lon, b.minlat, b.minlon, b.maxlat, b.maxlon]);
+      });
+      if (list.length > 300) {
+        const updated = todayStr();
+        try { await IDB.set('courses-jp', { courses: list, updated, at: Date.now() }); } catch (e) { }
+        return (courseIndex = buildIndex(list, updated));
+      }
+    } catch (e) { }
     courseIndexP = null; return null;
   })();
   return courseIndexP;
