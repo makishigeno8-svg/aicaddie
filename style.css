@@ -165,3 +165,5 @@ table.gi td{padding:3px 2px;text-align:center}
 table.gi th{text-align:center}
 table.gi input{width:44px;padding:7px 2px;text-align:center;font-size:15px}
 table.gi select{padding:6px 2px;font-size:14px}
+.chart-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.chart-cell{cursor:pointer}
+#pending-info .btn{pointer-events:none}

@@ -18,7 +18,7 @@ const Bridge = window.AndroidBridge || null;
 // ---------- 保存 ----------
 const KEY = 'aicaddie.v1';
 const defaultDB = () => ({
-  settings: { apiKey: '', model: 'claude-sonnet-5-5', unit: 'yd', voice: true, voiceName: '', voicePitch: 1.2, voiceRate: 1.05, competition: false, mapProvider: 'esri', googleKey: '' },
+  settings: { apiKey: '', model: 'claude-sonnet-5-5', unit: 'yd', voice: true, caddieStyle: 'balance', voiceName: '', voicePitch: 1.2, voiceRate: 1.05, competition: false, mapProvider: 'esri', googleKey: '' },
   clubs: [], shots: [], sessions: [], courses: [], rounds: [],
   activeRound: null, activeSession: null
 });
@@ -714,6 +714,9 @@ function renderSettings() {
     <div class="card">
       <div class="switch"><span>距離の単位</span><select id="s-unit" style="padding:6px;border-radius:8px"><option value="yd">ヤード</option><option value="m">メートル</option></select></div>
       <div class="switch"><span>地図の種類</span><select id="s-map" style="padding:6px;border-radius:8px"><option value="esri">航空写真（Esri・無料）</option><option value="google">Google衛星写真</option><option value="osm">地図（OSM）</option></select></div>
+      <div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="small muted" style="margin-bottom:6px">キャディのスタイル</div>
+        <div class="seg"><button data-cs="attack">🔥 攻め</button><button data-cs="balance">⚖️ バランス</button><button data-cs="defend">🛡 守り</button></div>
+        <div class="small muted" id="cs-desc" style="margin-top:6px"></div></div>
       <div class="switch"><span>AIの回答を読み上げる</span><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}></div>
       <div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <label class="f" style="margin-bottom:6px">キャディの声<select id="s-vname"><option value="">おまかせ（若い女性の声を自動で選択）</option></select></label>
@@ -745,6 +748,8 @@ function renderSettings() {
   $('#s-model').onchange = e => { s.model = e.target.value; save(); };
   $('#s-unit').onchange = e => { s.unit = e.target.value; save(); };
   $('#s-voice').onchange = e => { s.voice = e.target.checked; save(); };
+  const csShow = () => { const k = caddieStyle(); $$('[data-cs]').forEach(b => b.classList.toggle('on', b.dataset.cs === k)); $('#cs-desc').textContent = CADDIE_STYLES[k].desc; };
+  $$('[data-cs]').forEach(b => b.onclick = () => { s.caddieStyle = b.dataset.cs; save(); csShow(); }); csShow();
   const fillVoices = () => {
     const sel = $('#s-vname'); if (!sel) return;
     const vs = jaVoices(), auto = pickVoice();
