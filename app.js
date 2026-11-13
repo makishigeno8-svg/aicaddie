@@ -776,7 +776,8 @@ function renderSettings() {
         <label class="f">話す速さ <b id="s-rate-v"></b><input type="range" id="s-rate" min="0.8" max="1.4" step="0.05" style="padding:0"></label></div>
         <button class="btn small light" id="s-vtest">▶ 試しに聞く</button>
       </div>
-      <div class="switch" style="border:0"><span>競技モード<br><span class="small muted">AIの番手・攻め方アドバイスを無効化</span></span><input type="checkbox" id="s-comp" ${s.competition ? 'checked' : ''}></div>
+      <div class="switch"><span>競技モード<br><span class="small muted">AIの番手・攻め方アドバイスを無効化</span></span><input type="checkbox" id="s-comp" ${s.competition ? 'checked' : ''}></div>
+      <div class="switch" style="border:0"><span>🧪 テストモード（PCで試す）<br><span class="small muted">GPSの代わりに、地図をクリックした場所を現在地にします</span></span><input type="checkbox" id="s-testmode" ${s.testMode ? 'checked' : ''}></div>
     </div>
     <div class="card">
       <label class="f">Google Maps APIキー（Google衛星写真を使う場合）<input id="s-gkey" type="password" value="${esc(s.googleKey || '')}" placeholder="AIza..." autocomplete="off"></label>
@@ -816,6 +817,7 @@ function renderSettings() {
   $('#s-rate').oninput = e => { s.voiceRate = +e.target.value; $('#s-rate-v').textContent = s.voiceRate.toFixed(2); save(); };
   $('#s-vtest').onclick = () => { const on = s.voice; s.voice = true; speak('残り150ヤード、少しアゲンストです。7番アイアンでグリーンの真ん中を狙いましょう！'); s.voice = on; };
   $('#s-comp').onchange = e => { s.competition = e.target.checked; save(); };
+  $('#s-testmode').onchange = e => { s.testMode = e.target.checked; save(); ui.pos = null; ui.testMove = false; stopPlay(); toast(s.testMode ? 'テストモードをオンにしました。ラウンド画面に「🧪 現在地を動かす」ボタンが出ます' : 'テストモードをオフにしました（本物のGPSを使います）', 4000); };
   $('#s-gtest').onclick = async () => {
     s.googleKey = $('#s-gkey').value.trim(); s.gSession = null; save();
     try { showLoading('Googleに接続中…'); await googleLayer(); hideLoading(); toast('✅ Google衛星写真に接続できました', 3500); if (map) setBase('google'); s.mapProvider = 'google'; save(); $('#s-map').value = 'google'; }

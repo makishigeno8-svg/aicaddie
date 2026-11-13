@@ -167,3 +167,15 @@ table.gi input{width:44px;padding:7px 2px;text-align:center;font-size:15px}
 table.gi select{padding:6px 2px;font-size:14px}
 .chart-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.chart-cell{cursor:pointer}
 #pending-info .btn{pointer-events:none}
+
+#test-bar{position:absolute;left:10px;top:58px;z-index:560;display:flex;gap:6px;flex-wrap:wrap}
+#test-bar button{border:0;border-radius:10px;padding:8px 10px;background:#fff;font-weight:800;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+#test-bar button.on{background:#7c3aed;color:#fff}
+/* PCの広い画面ではスマホ幅で中央に表示 */
+@media (min-width: 720px) {
+  html { background: #d9dfdb; }
+  body { max-width: 460px; margin: 0 auto; box-shadow: 0 0 30px rgba(0,0,0,.18); background: var(--bg); }
+  .modal { max-width: 460px; margin: 0 auto; }
+  .toast { bottom: 90px; }
+  button, .chip, .list-item, [data-rd], [data-ch] { cursor: pointer; }
+}

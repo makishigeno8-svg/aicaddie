@@ -143,7 +143,36 @@ function showHandicapDetail() {
 }
 
 /* ---------------- コース取得・作成・編集 ---------------- */
+/* ---------------- テストモード（PCで試す・擬似GPS） ---------------- */
+const testMode = () => !!db.settings.testMode;
+function testPosGuess() {
+  if (ui.pos) return { lat: ui.pos.lat, lng: ui.pos.lng, acc: 3 };
+  const h = curHole && curRound() ? curHole() : null;
+  if (h && h.tee) return { lat: h.tee[0], lng: h.tee[1], acc: 3 };
+  if (map) { const c = map.getCenter(); return { lat: c.lat, lng: c.lng, acc: 3 }; }
+  return { lat: 35.681, lng: 139.767, acc: 3 }; // 東京駅（コース検索で場所を選んでください）
+}
+function fakePos(lat, lng) { onPos({ coords: { latitude: lat, longitude: lng, accuracy: 3 } }); }
+function renderTestBar() {
+  let bar = document.getElementById('test-bar');
+  if (!testMode()) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'test-bar'; document.getElementById('round-play').appendChild(bar); }
+  bar.innerHTML = `<button id="tb-move" class="${ui.testMove ? 'on' : ''}">🧪 ${ui.testMove ? 'クリックで現在地を移動中' : '現在地を動かす'}</button><button id="tb-step">🚶 次の地点へ</button>`;
+  $('#tb-move').onclick = () => { ui.testMove = !ui.testMove; renderTestBar(); if (ui.testMove) toast('地図をクリックすると、そこが現在地になります', 2500); };
+  $('#tb-step').onclick = () => {
+    const h = curHole(); if (!h) return;
+    const line = h.line || [h.tee, h.green].filter(Boolean);
+    if (line.length < 2) { toast('このホールはティーとグリーンが未設定です。「現在地を動かす」で地図をクリックしてください', 4000); return; }
+    const steps = [0, 0.55, 0.82, 0.96]; ui.testStep = ((ui.testStep || 0) + 1) % steps.length;
+    const segs = []; let tot = 0; for (let i = 0; i < line.length - 1; i++) { const d = distM(line[i], line[i + 1]); segs.push(d); tot += d; }
+    let t = steps[ui.testStep] * tot, p = line[line.length - 1];
+    for (let i = 0; i < segs.length; i++) { if (t <= segs[i]) { const k = t / segs[i]; p = [line[i][0] + (line[i + 1][0] - line[i][0]) * k, line[i][1] + (line[i + 1][1] - line[i][1]) * k]; break; } t -= segs[i]; }
+    fakePos(p[0], p[1]); map.panTo(p);
+    toast(['ティーに移動', 'ティーショット地点へ', 'セカンド地点へ', 'グリーン近くへ'][ui.testStep], 1500);
+  };
+}
 function getPositionOnce() {
+  if (testMode()) return Promise.resolve(testPosGuess());
   return new Promise((res, rej) => {
     if (!navigator.geolocation) return rej(new Error('位置情報が使えません'));
     navigator.geolocation.getCurrentPosition(p => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
@@ -399,7 +428,9 @@ function startPlay() {
   if (!map) initMap();
   setTimeout(() => map.invalidateSize(), 50);
   keepAwake(true);
-  if (watchId == null && navigator.geolocation) {
+  renderTestBar();
+  if (testMode()) { if (!ui.pos) { const p = testPosGuess(); setTimeout(() => fakePos(p.lat, p.lng), 100); } }
+  else if (watchId == null && navigator.geolocation) {
     watchId = navigator.geolocation.watchPosition(onPos, e => { $('#d-gps').textContent = e.code === 1 ? '⚠️ 位置情報が許可されていません' : '⚠️ GPS信号を待っています'; }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
   }
   drawCourse(); drawHole(true); updateDistances(); maybeFetchEnv();
@@ -834,6 +865,7 @@ function drawTarget() {
 }
 function onMapTap(e) {
   const p = [e.latlng.lat, e.latlng.lng];
+  if (testMode() && ui.testMove) { fakePos(p[0], p[1]); return; }
   if (ui.setGreen) {
     const h = curHole(), c = curCourse(), poly = (c.greens || []).find(g => inPoly(p, g));
     h.green = poly ? centroid(poly) : A({ lat: p[0], lng: p[1] }); h.greenPoly = poly || null;
@@ -867,7 +899,9 @@ function showWeatherDetail() {
 function changeHole(d) {
   const r = curRound(), c = curCourse(); if (!r || !c) return;
   const n = r.hole + d; if (n < 0 || n >= c.holes.length) return;
-  r.hole = n; ui.target = null; mapLayers.target.clearLayers(); save(); drawHole(true); updateDistances(); maybeFetchEnv();
+  r.hole = n; ui.target = null; mapLayers.target.clearLayers(); save();
+  if (testMode()) { ui.testStep = 0; const h = curHole(); if (h && h.tee) fakePos(h.tee[0], h.tee[1]); }
+  drawHole(true); updateDistances(); maybeFetchEnv();
 }
 $('#hole-prev').onclick = () => changeHole(-1);
 $('#hole-next').onclick = () => changeHole(1);
