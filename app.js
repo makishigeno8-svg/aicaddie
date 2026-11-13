@@ -287,7 +287,11 @@ function agg(a) {
   const n = a.length, mean = a.reduce((p, c) => p + c, 0) / n;
   const sd = Math.sqrt(a.reduce((p, c) => p + (c - mean) ** 2, 0) / n);
   const s = [...a].sort((x, y) => x - y);
-  return { n, mean, sd, min: s[0], max: s[n - 1], med: n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2 };
+  const q = p => { const i = (n - 1) * p, lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); };
+  const q1 = q(0.25), q3 = q(0.75);
+  // 外れ値（ミスショット）に強いばらつき：四分位範囲から推定。球数が少ないときは標準偏差を使う
+  const rsd = n >= 5 ? (q3 - q1) / 1.349 : sd;
+  return { n, mean, sd, min: s[0], max: s[n - 1], med: q(0.5), q1, q3, rsd };
 }
 function clubStats(clubId, src = 'all') {
   const s = db.shots.filter(x => x.clubId === clubId && (src === 'all' || x.src === src));
@@ -299,8 +303,9 @@ function clubStats(clubId, src = 'all') {
 // AIキャディ用の「その番手の基準キャリー」
 function clubCarry(c) {
   const st = clubStats(c.id);
-  if (st.carry && st.carry.n >= 3) return { v: st.carry.mean, sd: st.carry.sd, n: st.carry.n, how: '実測' };
-  if (st.total && st.total.n >= 3) return { v: st.total.mean * 0.93, sd: st.total.sd, n: st.total.n, how: 'コース実測から推定' };
+  // 基準は中央値（トップやダフリなどのミスに引っ張られない）
+  if (st.carry && st.carry.n >= 3) return { v: st.carry.med, mean: st.carry.mean, sd: st.carry.rsd, n: st.carry.n, min: st.carry.min, max: st.carry.max, how: '実測' };
+  if (st.total && st.total.n >= 3) return { v: st.total.med * 0.93, mean: st.total.mean * 0.93, sd: st.total.rsd, n: st.total.n, how: 'コース実測から推定' };
   if (isNum(c.manualCarry)) return { v: c.manualCarry, sd: null, n: 0, how: '自己申告' };
   return null;
 }
@@ -312,9 +317,9 @@ function bagSummaryForAI() {
   return sortedClubs().filter(c => c.type !== 'putter').map(c => {
     const cc = clubCarry(c), st = clubStats(c.id);
     let s = `${c.name}`;
-    if (cc) s += `: キャリー約${Math.round(cc.v)}y` + (cc.sd ? `(ばらつき±${Math.round(cc.sd)}y, ${cc.n}球)` : '') + `[${cc.how}]`;
+    if (cc) s += `: キャリー中央値${Math.round(cc.v)}y` + (cc.n ? `（平均${Math.round(cc.mean)}y、普段の幅±${Math.round(cc.sd)}y、${cc.n}球${isNum(cc.min) ? `、最短${Math.round(cc.min)}〜最長${Math.round(cc.max)}y` : ''}）` : '') + `[${cc.how}]`;
     else s += ': 飛距離データなし';
-    if (st.side && st.side.n >= 3) s += `, 左右平均${st.side.mean >= 0 ? '右' : '左'}${Math.abs(Math.round(st.side.mean))}y`;
+    if (st.side && st.side.n >= 3) s += `, 左右の中央値${st.side.med >= 0 ? '右' : '左'}${Math.abs(Math.round(st.side.med))}y`;
     const td = tendency(st); if (td) s += `, 傾向:${td}`;
     return s;
   }).join('\n') || '（クラブ未登録）';
@@ -446,8 +451,8 @@ function renderRange() {
     </div>` : `<div class="notice">クラブが未登録です。「クラブ」タブで登録するか、計測モニターの撮影から始めてください。</div>`}
     <div class="grid2"><button class="btn ghost" id="rg-mon2">📷 モニター撮影</button><button class="btn accent" id="rg-coach">🤖 AIコーチ</button></div>
     <h3>今回の番手別</h3>
-    <div class="card">${Object.keys(per).length ? `<table class="t"><tr><th>番手</th><th>球数</th><th>平均</th><th>最大</th><th>ばらつき</th><th>方向 左/中/右</th></tr>
-      ${Object.entries(per).map(([cid, arr]) => { const a = agg(arr.map(x => x.carry)); const d = { L: 0, C: 0, R: 0 }; arr.forEach(x => { const k = x.dir || (isNum(x.side) ? (x.side < -5 ? 'L' : x.side > 5 ? 'R' : 'C') : null); if (k) d[k]++; }); return `<tr><td><b>${esc(clubById(cid)?.name || '?')}</b></td><td>${arr.length}</td><td>${a ? fmtN(a.mean) : '—'}</td><td>${a ? fmtN(a.max) : '—'}</td><td>${a ? '±' + fmtN(a.sd) : '—'}</td><td>${d.L}/${d.C}/${d.R}</td></tr>`; }).join('')}</table>` : '<span class="muted small">まだ記録がありません</span>'}</div>
+    <div class="card">${Object.keys(per).length ? `<table class="t"><tr><th>番手</th><th>球数</th><th>中央値</th><th>最大</th><th>幅</th><th>方向 左/中/右</th></tr>
+      ${Object.entries(per).map(([cid, arr]) => { const a = agg(arr.map(x => x.carry)); const d = { L: 0, C: 0, R: 0 }; arr.forEach(x => { const k = x.dir || (isNum(x.side) ? (x.side < -5 ? 'L' : x.side > 5 ? 'R' : 'C') : null); if (k) d[k]++; }); return `<tr><td><b>${esc(clubById(cid)?.name || '?')}</b></td><td>${arr.length}</td><td>${a ? fmtN(a.med) : '—'}</td><td>${a ? fmtN(a.max) : '—'}</td><td>${a ? '±' + fmtN(a.rsd) : '—'}</td><td>${d.L}/${d.C}/${d.R}</td></tr>`; }).join('')}</table>` : '<span class="muted small">まだ記録がありません</span>'}</div>
     <h3>記録（新しい順）</h3>
     <div class="card">${shots.slice().reverse().slice(0, 40).map(x => `<div class="shot-line"><span><b>${esc(clubById(x.clubId)?.name || '?')}</b>　${fmt(x.carry)}${x.dir ? '　' + { L: '左', C: '中', R: '右' }[x.dir] : isNum(x.side) ? `　${x.side >= 0 ? '右' : '左'}${fmtN(Math.abs(x.side))}` : ''}${x.q ? '　' + ['', '×', '△', '○', '◎'][x.q] : ''}${x.src === 'monitor' ? ' <span class="badge gray">計測器</span>' : ''}</span><button class="x-btn" data-del="${x.id}">✕</button></div>`).join('') || '<span class="muted small">—</span>'}</div>`;
   $$('[data-club]', el).forEach(b => b.onclick = () => { ui.rangeClub = b.dataset.club; const v = clubCarry(clubById(ui.rangeClub)); const last = shots.filter(x => x.clubId === ui.rangeClub && isNum(x.carry)).pop(); ui.rangeCarry = last ? Math.round(toDisp(last.carry)) : v ? Math.round(toDisp(v.v)) : ui.rangeCarry; renderRange(); });
@@ -482,7 +487,7 @@ function sessionText(id) {
     const a = agg(arr.map(x => x.carry)), d = { L: 0, C: 0, R: 0 }, q = [0, 0, 0, 0, 0];
     arr.forEach(x => { if (x.dir) d[x.dir]++; else if (isNum(x.side)) d[x.side < -5 ? 'L' : x.side > 5 ? 'R' : 'C']++; if (x.q) q[x.q]++; });
     const sd = agg(arr.map(x => x.side)), bs = agg(arr.map(x => x.ballSpeed)), hs = agg(arr.map(x => x.clubSpeed));
-    return `${clubById(cid)?.name || '?'}: ${arr.length}球` + (a ? `, キャリー平均${Math.round(a.mean)}y(最小${Math.round(a.min)}〜最大${Math.round(a.max)}, σ${Math.round(a.sd)})` : '') + `, 方向 左${d.L}/中${d.C}/右${d.R}` + (sd ? `, 左右平均${r1(sd.mean)}y(σ${r1(sd.sd)})` : '') + (bs ? `, ボール初速${r1(bs.mean)}m/s` : '') + (hs ? `, HS${r1(hs.mean)}m/s` : '') + (q[1] + q[2] + q[3] + q[4] ? `, 手応え ◎${q[4]}○${q[3]}△${q[2]}×${q[1]}` : '');
+    return `${clubById(cid)?.name || '?'}: ${arr.length}球` + (a ? `, キャリー中央値${Math.round(a.med)}y(平均${Math.round(a.mean)}、最小${Math.round(a.min)}〜最大${Math.round(a.max)}、普段の幅±${Math.round(a.rsd)})` : '') + `, 方向 左${d.L}/中${d.C}/右${d.R}` + (sd ? `, 左右平均${r1(sd.mean)}y(σ${r1(sd.sd)})` : '') + (bs ? `, ボール初速${r1(bs.mean)}m/s` : '') + (hs ? `, HS${r1(hs.mean)}m/s` : '') + (q[1] + q[2] + q[3] + q[4] ? `, 手応え ◎${q[4]}○${q[3]}△${q[2]}×${q[1]}` : '');
   }).join('\n');
 }
 async function coachSession(id) {
@@ -549,7 +554,7 @@ function gappingChart() {
       <rect x="${x0}" y="${y + 3}" width="${sx(v) - x0}" height="14" rx="4" fill="${x.cc.how === '実測' ? '#16a34a' : '#a7c4b0'}"/>
       ${sd ? `<line x1="${sx(v - sd)}" x2="${sx(v + sd)}" y1="${y + 10}" y2="${y + 10}" stroke="#14532d" stroke-width="1.5"/>` : ''}
       <text x="${sx(v) + 4}" y="${y + 15}" font-size="11" fill="${warn ? '#dc2626' : '#333'}">${fmtN(v)}${gap != null ? ` (${gap >= 0 ? '-' : '+'}${fmtN(Math.abs(gap))})` : ''}</text>`;
-  }).join('')}</svg><div class="small muted">濃い緑=実測、薄い緑=自己申告/推定。線はばらつき(±σ)。赤字は前の番手との差が小さすぎ/大きすぎ。</div>`;
+  }).join('')}</svg><div class="small muted">濃い緑=実測（中央値）、薄い緑=自己申告/推定。線は普段の幅。赤字は前の番手との差が小さすぎ/大きすぎ。</div>`;
 }
 function clubForm(c) {
   const isNew = !c; c = c || { name: '', type: 'iron' };
@@ -627,9 +632,9 @@ function renderStats() {
   el.innerHTML = seg + `<h2>番手別の統計</h2>
     <div class="card"><button class="btn block" id="st-cam">📷 計測データの画像を読み込む</button><p class="small muted" style="margin:2px 0 0;line-height:1.6">弾道測定器・練習場モニター・アプリ画面のスクリーンショットを撮影/選択すると、登録クラブごとの統計に反映されます。</p></div>
     <div class="chips" style="margin-bottom:10px">${Object.entries(SRC).map(([k, v]) => `<button class="chip ${ui.statsSrc === k ? 'on' : ''}" data-src="${k}">${v}</button>`).join('')}</div>
-    ${rows.length ? `<div class="card scroll-x"><table class="t"><tr><th>番手</th><th>球数</th><th>キャリー</th><th>最大</th><th>ばらつき</th><th>トータル</th><th>傾向</th></tr>
-      ${rows.map(({ c, st }) => `<tr class="click ${ui.highlight.includes(c.id) ? 'hl' : ''}" data-c="${c.id}"><td><b>${esc(c.name)}</b></td><td>${st.n}</td><td><b>${st.carry ? fmtN(st.carry.mean) : '—'}</b></td><td>${st.carry ? fmtN(st.carry.max) : '—'}</td><td>${st.carry ? '±' + fmtN(st.carry.sd) : '—'}</td><td>${st.total ? fmtN(st.total.mean) : '—'}</td><td>${tendency(st) || '—'}</td></tr>`).join('')}
-      </table><div class="small muted" style="margin-top:6px">行をタップすると詳細（散布図・推移）を表示します。単位: ${U() === 'm' ? 'メートル' : 'ヤード'}</div></div>
+    ${rows.length ? `<div class="card scroll-x"><table class="t"><tr><th>番手</th><th>球数</th><th>中央値</th><th>平均</th><th>最大</th><th>幅</th><th>トータル</th><th>傾向</th></tr>
+      ${rows.map(({ c, st }) => `<tr class="click ${ui.highlight.includes(c.id) ? 'hl' : ''}" data-c="${c.id}"><td><b>${esc(c.name)}</b></td><td>${st.n}</td><td><b>${st.carry ? fmtN(st.carry.med) : '—'}</b></td><td>${st.carry ? fmtN(st.carry.mean) : '—'}</td><td>${st.carry ? fmtN(st.carry.max) : '—'}</td><td>${st.carry ? '±' + fmtN(st.carry.rsd) : '—'}</td><td>${st.total ? fmtN(st.total.med) : '—'}</td><td>${tendency(st) || '—'}</td></tr>`).join('')}
+      </table><div class="small muted" style="margin-top:6px">キャリーは<b>中央値</b>（ミスショットに左右されない「普段の距離」）を基準にしています。幅＝普段のばらつき。行をタップすると詳細を表示。単位: ${U() === 'm' ? 'メートル' : 'ヤード'}</div></div>
       <h3>飛距離の階段</h3><div class="card">${gappingChart()}</div>`
       : '<p class="muted">この条件のデータはまだありません。練習場モードで記録するか、計測データの画像を読み込んでください。</p>'}`;
   bindSeg();
@@ -643,8 +648,8 @@ function renderClubDetail(el, c) {
   el.innerHTML = `<div class="spread"><button class="btn small ghost" id="st-back">◀ 一覧</button><div class="chips">${Object.entries(SRC).map(([k, v]) => `<button class="chip ${ui.statsSrc === k ? 'on' : ''}" data-src="${k}" style="padding:5px 9px;font-size:12px">${v.replace('(手入力)', '')}</button>`).join('')}</div></div>
     <h2 style="margin-top:12px">${esc(c.name)} <span class="small muted">${esc([c.brand, c.model].filter(Boolean).join(' '))}${isNum(c.loft) ? ' ' + c.loft + '°' : ''}</span></h2>
     ${st.n ? `<div class="card"><div class="grid3">
-      ${box('平均キャリー', st.carry ? fmt(st.carry.mean) : '—')}${box('ばらつき(σ)', st.carry ? '±' + fmt(st.carry.sd) : '—')}${box('球数', st.n)}
-      ${box('最大', st.carry ? fmt(st.carry.max) : '—')}${box('中央値', st.carry ? fmt(st.carry.med) : '—')}${box('最小', st.carry ? fmt(st.carry.min) : '—')}
+      ${box('キャリー（中央値）', st.carry ? fmt(st.carry.med) : '—')}${box('平均', st.carry ? fmt(st.carry.mean) : '—')}${box('球数', st.n)}
+      ${box('普段の幅', st.carry ? '±' + fmt(st.carry.rsd) : '—')}${box('最大', st.carry ? fmt(st.carry.max) : '—')}${box('最小', st.carry ? fmt(st.carry.min) : '—')}
       ${box('平均トータル', st.total ? fmt(st.total.mean) : '—')}${box('左右平均', st.side ? (st.side.mean >= 0 ? '右' : '左') + fmt(Math.abs(st.side.mean)) : '—')}${box('方向 左/中/右', `${st.dirs.L}/${st.dirs.C}/${st.dirs.R}`)}
       ${st.bs ? box('ボール初速', r1(st.bs.mean) + 'm/s') : ''}${st.hs ? box('ヘッドスピード', r1(st.hs.mean) + 'm/s') : ''}${st.smash ? box('ミート率', st.smash.mean.toFixed(2)) : ''}
       ${st.launch ? box('打ち出し角', r1(st.launch.mean) + '°') : ''}${st.spin ? box('スピン', Math.round(st.spin.mean) + 'rpm') : ''}
