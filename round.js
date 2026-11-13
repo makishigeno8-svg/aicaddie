@@ -194,7 +194,7 @@ async function importOsmCourse(c, opts = {}) {
     let msg = '';
     if (!holes.length) { holes = Array.from({ length: 18 }, (_, i) => ({ ref: i + 1, par: 4, tee: null, green: null, greenPoly: null, line: null })); msg = 'ホール情報が未登録のため、プレー中にグリーン位置を設定してください（グリーン等の形は読み込み済み）'; }
     holes.forEach((h, i) => h.n = h.ref || i + 1);
-    const course = { id: uid(), name: c.name, source: 'osm', holes, greens, fairways, tees, hazards, rating: null, slope: null, created: Date.now() };
+    const course = { id: uid(), name: c.name, source: 'osm', holes, greens, fairways, tees, hazards, rating: null, slope: null, bounds: c.bounds, created: Date.now() };
     db.courses.push(course); save();
     toast(msg || `${holes.length}ホールを読み込みました。✏️でコースレート・スロープを入れるとハンディキャップが正確になります`, 5000);
     if (opts.ask === false) return course;
@@ -225,11 +225,17 @@ function editCourse(c, after) {
     <div class="scroll-x"><table class="t"><tr><th>ホール</th><th>パー</th><th>HC</th><th>グリーン</th></tr>
     ${c.holes.map((h, i) => `<tr data-i="${i}"><td>${h.n}</td><td><select class="par">${[3, 4, 5, 6].map(p => `<option ${h.par === p ? 'selected' : ''}>${p}</option>`).join('')}</select></td><td><input class="si" inputmode="numeric" value="${h.si ?? ''}"></td><td>${h.green ? '✓' : '<span class="muted">未</span>'}</td></tr>`).join('')}</table></div>
     <button class="btn block" id="ec-save" style="margin-top:10px">保存</button>
+    <button class="btn block light" id="ec-prep">🗺 地図でティー・グリーン位置を設定</button>
     <button class="btn block danger" id="ec-del">このコースを削除</button>`);
   $('#ec-save', el).onclick = () => {
     c.name = $('#ec-name', el).value.trim() || c.name; c.rating = num($('#ec-cr', el).value); c.slope = num($('#ec-sr', el).value);
     $$('tr[data-i]', el).forEach(tr => { const h = c.holes[+tr.dataset.i]; h.par = +$('.par', tr).value; h.si = num($('.si', tr).value); });
     save(); closeModal(); toast('保存しました'); if (after) after();
+  };
+  $('#ec-prep', el).onclick = () => {
+    c.name = $('#ec-name', el).value.trim() || c.name; c.rating = num($('#ec-cr', el).value); c.slope = num($('#ec-sr', el).value);
+    $$('tr[data-i]', el).forEach(tr => { const h = c.holes[+tr.dataset.i]; h.par = +$('.par', tr).value; h.si = num($('.si', tr).value); });
+    save(); closeModal(); coursePrep(c, 0, after);
   };
   $('#ec-del', el).onclick = async () => {
     closeModal();
@@ -240,8 +246,145 @@ function editCourse(c, after) {
 
 /* ---------------- ラウンド開始・地図 ---------------- */
 function startRound(courseId) {
-  db.activeRound = { id: uid(), courseId, date: new Date().toISOString(), hole: 0, scores: {}, track: {} };
-  save(); ui.target = null; renderRound();
+  const c = courseById(courseId); if (!c) return;
+  condForm(c.lastCond || { tee: 'レギュラー', stimp: 9, firm: '普通', memo: '' }, cond => {
+    c.lastCond = cond;
+    db.activeRound = { id: uid(), courseId, date: new Date().toISOString(), hole: 0, scores: {}, track: {}, cond, pins: pinsFromDay(cond.day) };
+    save(); ui.target = null; renderRound();
+  }, { course: c, btn: '⛳ スタート' });
+}
+/* ---------------- グリーン・コンディション ---------------- */
+const TEES = ['バック', 'レギュラー', 'フロント', 'レディース'];
+const SPEEDS = [['遅め', 7.5], ['普通', 9], ['速め', 10.5], ['とても速い', 12]];
+const FIRMS = ['柔らかい', '普通', '硬い'];
+const speedLabel = ft => !isNum(ft) ? '不明' : ft < 8.3 ? '遅め' : ft < 9.8 ? '普通' : ft < 11.3 ? '速め' : 'とても速い';
+function condForm(cur, onOK, { course, btn = '保存' } = {}) {
+  const c0 = Object.assign({ tee: 'レギュラー', stimp: 9, firm: '普通', memo: '' }, cur || {});
+  const unset = course ? course.holes.filter(h => !h.green).length : 0;
+  const el = openModal(`<h2>${course ? esc(course.name) : 'コンディション'}</h2>
+    ${unset ? `<div class="notice" style="margin-bottom:10px">グリーン位置が未設定のホールが ${unset} あります。<button class="btn small light" id="cf-prep" style="margin-top:6px">🗺 地図でティー・グリーンを設定する</button></div>` : ''}
+    <button class="btn block accent" id="cf-cam">📷 本日のティー・ピン位置表を撮影して読み込む（複数枚OK）</button>
+    <div id="cf-day" class="small" style="margin:-2px 0 12px;line-height:1.6">${c0.day && c0.day.holes ? dayInfoSummary(c0.day) : '<span class="muted">スタート前に掲示される「本日のピン位置・ティー位置」の表やカードを撮ると、ホールごとの距離とピン位置を読み取ってキャディに反映します。</span>'}</div>
+    <div class="small muted">使用ティー</div><div class="chips" style="margin:4px 0 12px">${TEES.map(t => `<button class="chip ${c0.tee === t ? 'on' : ''}" data-tee="${t}">${t}</button>`).join('')}</div>
+    <div class="small muted">グリーンスピード（スティンプメーター）</div>
+    <div class="chips" style="margin:4px 0 6px">${SPEEDS.map(([l, v]) => `<button class="chip ${speedLabel(c0.stimp) === l ? 'on' : ''}" data-sp="${v}">${l}</button>`).join('')}</div>
+    <div class="row" style="margin-bottom:12px"><input id="cf-stimp" inputmode="decimal" value="${c0.stimp ?? ''}" style="width:90px;padding:9px;border:1px solid #cfd6d2;border-radius:10px;font-size:16px;text-align:center"><span>フィート</span><span class="small muted">（クラブハウスの掲示板に「本日のグリーン 9.5ft」等）</span></div>
+    <div class="small muted">グリーンの硬さ</div><div class="seg" style="margin:4px 0 12px">${FIRMS.map(f => `<button data-firm="${f}" class="${c0.firm === f ? 'on' : ''}">${f}</button>`).join('')}</div>
+    <label class="f">メモ（任意）<input id="cf-memo" value="${esc(c0.memo || '')}" placeholder="例: 芝目が強い、受けグリーンが多い、ピンは奥が多い"></label>
+    <button class="btn block" id="cf-ok">${esc(btn)}</button>`);
+  $$('[data-tee]', el).forEach(b => b.onclick = () => { c0.tee = b.dataset.tee; $$('[data-tee]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  $$('[data-sp]', el).forEach(b => b.onclick = () => { $('#cf-stimp', el).value = b.dataset.sp; $$('[data-sp]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  $('#cf-stimp', el).oninput = e => { const l = speedLabel(num(e.target.value)); $$('[data-sp]', el).forEach(x => x.classList.toggle('on', x.textContent === l)); };
+  $$('[data-firm]', el).forEach(b => b.onclick = () => { c0.firm = b.dataset.firm; $$('[data-firm]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  $('#cf-cam', el).onclick = async () => {
+    const d = await readDaySheet(course, c0.tee); if (!d) return;
+    c0.day = d;
+    if (isNum(d.stimp)) { c0.stimp = d.stimp; $('#cf-stimp', el).value = d.stimp; $('#cf-stimp', el).oninput({ target: $('#cf-stimp', el) }); }
+    if (d.tee && TEES.includes(d.tee)) { c0.tee = d.tee; $$('[data-tee]', el).forEach(x => x.classList.toggle('on', x.dataset.tee === d.tee)); }
+    $('#cf-day', el).innerHTML = dayInfoSummary(d);
+  };
+  if ($('#cf-prep', el)) $('#cf-prep', el).onclick = () => { closeModal(); coursePrep(course, 0, () => condForm(c0, onOK, { course, btn })); };
+  $('#cf-ok', el).onclick = () => { c0.stimp = num($('#cf-stimp', el).value); c0.memo = $('#cf-memo', el).value.trim(); closeModal(); onOK(c0); };
+}
+const SLOPES = ['受け（奥が高い）', '奥へ下る', '左が高い', '右が高い', '砲台', '2段', 'すり鉢', 'フラット'];
+const slopeText = h => [(h.slope || []).join('・'), h.slopeMemo].filter(Boolean).join('／');
+const PIN_D = { front: '手前', center: '中', back: '奥' }, PIN_S = { left: '左', center: '中', right: '右' };
+const pinLabel = p => !p ? '' : isNum(p.fromFront) ? `手前から${p.fromFront}y${p.s && p.s !== 'center' ? '・' + PIN_S[p.s] + (isNum(p.fromSide) ? p.fromSide + 'y' : '') : ''}` : (p.d === 'center' && p.s === 'center' ? 'センター' : `${PIN_D[p.d]}${p.s !== 'center' ? '・' + PIN_S[p.s] : ''}`);
+function pinForm() {
+  const r = curRound(), h = curHole(); r.pins = r.pins || {}; const cur = r.pins[h.n];
+  const el = openModal(`<h2>📍 ${h.n}番のピン位置</h2><p class="small muted">グリーンを上から見て、手前が下です。</p>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:300px;margin:0 auto 12px">
+    ${['back', 'center', 'front'].map(d => ['left', 'center', 'right'].map(s => `<button class="btn ${cur && cur.d === d && cur.s === s ? '' : 'light'}" data-d="${d}" data-s="${s}" style="padding:16px 0">${d === 'center' && s === 'center' ? '中央' : PIN_D[d] + (s !== 'center' ? PIN_S[s] : '')}</button>`).join('')).join('')}</div>
+    <button class="btn block ghost" id="pin-clear">未設定にする（センターで計算）</button>
+    <h3>グリーンの傾斜（このコースに保存）</h3>
+    <div class="chips" id="slope-chips">${SLOPES.map(s => `<button class="chip ${(h.slope || []).includes(s) ? 'on' : ''}" data-sl="${s}">${s}</button>`).join('')}</div>
+    <label class="f" style="margin-top:8px">傾斜メモ<input id="slope-memo" value="${esc(h.slopeMemo || '')}" placeholder="例: 奥からは高速の下り、右奥が一番高い"></label>
+    <button class="btn block light" id="slope-save">傾斜を保存</button>`);
+  $$('[data-sl]', el).forEach(b => b.onclick = () => b.classList.toggle('on'));
+  $('#slope-save', el).onclick = () => { h.slope = $$('[data-sl].on', el).map(b => b.dataset.sl); h.slopeMemo = $('#slope-memo', el).value.trim(); save(); closeModal(); toast('グリーンの傾斜を保存しました（次回以降のラウンドでも使われます）'); };
+  $$('[data-d]', el).forEach(b => b.onclick = () => { r.pins[h.n] = { d: b.dataset.d, s: b.dataset.s }; save(); closeModal(); updateDistances(); });
+  $('#pin-clear', el).onclick = () => { delete r.pins[h.n]; save(); closeModal(); updateDistances(); };
+}
+/* ---------------- コースの準備（地図でティー・グリーンを登録） ---------------- */
+let prepMap = null;
+async function makeBaseLayer() {
+  if ((db.settings.mapProvider || 'esri') === 'google') {
+    try { const g = await googleLayer(); return L.tileLayer(g._url, g.options); } catch (e) { toast('Google衛星写真を使えないため、Esriの航空写真で表示します'); }
+  }
+  if (db.settings.mapProvider === 'osm') return L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 21, maxNativeZoom: 19, attribution: '© OpenStreetMap contributors' });
+  return L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery © Esri' });
+}
+async function coursePrep(course, idx = 0, after) {
+  if (!course) return;
+  let hi = Math.max(0, Math.min(idx, course.holes.length - 1)), mode = 'tee';
+  const MODES = { tee: 'ティー', green: 'グリーン中央', front: 'グリーン手前', back: 'グリーン奥' }, NEXT = { tee: 'green', green: 'front', front: 'back', back: 'tee' };
+  const el = openModal(`<h2>🗺 ${esc(course.name)}</h2>
+    <div class="row" style="margin-bottom:8px"><input id="pp-q" class="grow" placeholder="場所を検索（ゴルフ場名など）" style="padding:9px;border:1px solid #cfd6d2;border-radius:10px"><button class="btn small" id="pp-go">移動</button></div>
+    <div class="spread" style="margin-bottom:6px"><button class="icon-btn" id="pp-prev">◀</button><b id="pp-hole" style="font-size:17px"></b><button class="icon-btn" id="pp-next">▶</button></div>
+    <div id="prep-map" style="height:46vh;border-radius:12px;overflow:hidden;background:#2d3b2f"></div>
+    <div class="seg" style="margin:8px 0">${Object.entries(MODES).map(([k, v]) => `<button data-pm="${k}">${v.replace('グリーン', '')}</button>`).join('')}</div>
+    <div id="pp-info" class="small" style="min-height:40px;line-height:1.6"></div>
+    <div class="grid2"><button class="btn ghost" id="pp-me">📍 現在地へ</button><button class="btn" id="pp-done">完了</button></div>`, () => { if (prepMap) { prepMap.remove(); prepMap = null; } if (after) after(); });
+  prepMap = L.map($('#prep-map', el), { zoomControl: true, maxZoom: 21 });
+  (await makeBaseLayer()).addTo(prepMap);
+  const bg = L.layerGroup().addTo(prepMap), lg = L.layerGroup().addTo(prepMap);
+  (course.hazards || []).forEach(h => L.polygon(h.p, { color: h.t === 'water' ? '#1d4ed8' : '#b59545', weight: 1, fillOpacity: .3, interactive: false }).addTo(bg));
+  (course.greens || []).forEach(g => L.polygon(g, { color: '#15803d', weight: 1, fillColor: '#4ade80', fillOpacity: .25, interactive: false }).addTo(bg));
+  const icon = (txt, color) => L.divIcon({ className: '', html: `<div class="trk-num" style="background:${color};color:#fff">${txt}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+  const render = () => {
+    const h = course.holes[hi]; lg.clearLayers();
+    $('#pp-hole').textContent = `${h.n}番 Par${h.par}${h.si ? ' HC' + h.si : ''}`;
+    $$('[data-pm]', el).forEach(b => b.classList.toggle('on', b.dataset.pm === mode));
+    if (h.tee && h.green) L.polyline([h.tee, h.green], { color: '#fff', weight: 2, dashArray: '6 6', interactive: false }).addTo(lg);
+    if (h.greenPoly) L.polygon(h.greenPoly, { color: '#facc15', weight: 2, fillOpacity: 0, interactive: false }).addTo(lg);
+    if (h.tee) L.marker(h.tee, { icon: icon('T', '#2563eb'), interactive: false }).addTo(lg);
+    if (h.green) L.marker(h.green, { icon: flagIcon(), interactive: false }).addTo(lg);
+    if (h.gFront) L.marker(h.gFront, { icon: icon('前', '#16a34a'), interactive: false }).addTo(lg);
+    if (h.gBack) L.marker(h.gBack, { icon: icon('奥', '#b45309'), interactive: false }).addTo(lg);
+    const info = [];
+    if (h.tee && h.green) info.push(`ティー〜グリーン中央 <b>${fmt(distY(h.tee, h.green))}</b>`);
+    if (h.gFront && h.gBack) info.push(`グリーンの奥行き <b>${fmt(distY(h.gFront, h.gBack))}</b>`);
+    else if (h.greenPoly) info.push('グリーンの形あり（手前・奥は自動計算）');
+    $('#pp-info').innerHTML = `${info.join('　')}<br><span style="color:var(--green);font-weight:700">地図をタップして「${MODES[mode]}」の位置を設定</span>`;
+  };
+  const fit = async () => {
+    const h = course.holes[hi], pts = [h.tee, h.green, h.gFront, h.gBack, ...(h.greenPoly || [])].filter(Boolean);
+    const prev = course.holes[hi - 1];
+    if (pts.length >= 2) prepMap.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 18 });
+    else if (pts.length === 1) prepMap.setView(pts[0], 17);
+    else if (prev && prev.green) prepMap.setView(prev.green, 17);
+    else if (course.bounds) prepMap.fitBounds([[course.bounds.minlat, course.bounds.minlon], [course.bounds.maxlat, course.bounds.maxlon]]);
+    else if (course.center) prepMap.setView(course.center, 16);
+    else {
+      prepMap.setView([36.2, 138.2], 5);
+      try { const p = await getPositionOnce(); if (prepMap) prepMap.setView([p.lat, p.lng], 16); } catch (e) { toast('上の検索欄にゴルフ場名を入れて「移動」を押してください', 4000); }
+    }
+  };
+  const goHole = d => { const n = hi + d; if (n < 0 || n >= course.holes.length) return; hi = n; const h = course.holes[hi]; mode = !h.tee ? 'tee' : !h.green ? 'green' : !h.greenPoly && !h.gFront ? 'front' : !h.greenPoly && !h.gBack ? 'back' : 'tee'; render(); fit(); };
+  prepMap.on('click', e => {
+    const h = course.holes[hi], p = A({ lat: e.latlng.lat, lng: e.latlng.lng });
+    if (mode === 'tee') h.tee = p;
+    else if (mode === 'green') { const poly = (course.greens || []).find(g => inPoly(p, g)); h.green = poly ? centroid(poly) : p; h.greenPoly = poly || null; if (poly) { mode = 'back'; } }
+    else if (mode === 'front') h.gFront = p;
+    else { h.gBack = p; }
+    save();
+    if (mode === 'back' && (h.gBack || h.greenPoly)) { mode = 'tee'; render(); if (hi < course.holes.length - 1) toast(`${h.n}番の設定ができました。▶で次のホールへ`, 2200); return; }
+    mode = NEXT[mode]; render();
+  });
+  $$('[data-pm]', el).forEach(b => b.onclick = () => { mode = b.dataset.pm; render(); });
+  $('#pp-prev', el).onclick = () => goHole(-1);
+  $('#pp-next', el).onclick = () => goHole(1);
+  $('#pp-done', el).onclick = closeModal;
+  $('#pp-me', el).onclick = async () => { try { const p = await getPositionOnce(); prepMap.setView([p.lat, p.lng], 18); } catch (e) { toast(e.message); } };
+  const search = async () => {
+    const q = $('#pp-q', el).value.trim(); if (!q) return;
+    try { const res = await nominatimSearch(q), x = res.find(y => y.type === 'golf_course') || res[0]; if (!x) return toast('見つかりませんでした');
+      const bb = x.boundingbox.map(Number); prepMap.fitBounds([[bb[0], bb[2]], [bb[1], bb[3]]]); course.center = [+x.lat, +x.lon]; save(); }
+    catch (e) { toast(e.message); }
+  };
+  $('#pp-go', el).onclick = search; $('#pp-q', el).onkeydown = e => { if (e.key === 'Enter') search(); };
+  mode = !course.holes[hi].tee ? 'tee' : 'green';
+  render(); setTimeout(() => { if (prepMap) { prepMap.invalidateSize(); fit(); } }, 120);
 }
 function startPlay() {
   if (!map) initMap();
@@ -295,7 +438,7 @@ async function googleLayer() {
     db.settings.gSession = s; save();
   }
   if (baseLayers.google && baseLayers.google._tok === s.token) return baseLayers.google;
-  if (baseLayers.google && map.hasLayer(baseLayers.google)) map.removeLayer(baseLayers.google);
+  if (baseLayers.google && map && map.hasLayer(baseLayers.google)) map.removeLayer(baseLayers.google);
   baseLayers.google = L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${encodeURIComponent(s.token)}&key=${encodeURIComponent(key)}`, { maxZoom: 21, maxNativeZoom: 19, attribution: 'Google' });
   baseLayers.google._tok = s.token;
   baseLayers.google.on('tileerror', () => { if (!baseLayers.google._warned) { baseLayers.google._warned = true; toast('Googleの画像を一部取得できませんでした'); } });
@@ -511,7 +654,14 @@ function greenInfo(from) {
   const h = curHole(); if (!h || !h.green || !from) return null;
   const center = distY(from, h.green); let front = null, back = null;
   if (h.greenPoly) { const f = frame(from, h.green), al = h.greenPoly.map(p => f(p).along * M2YD); front = Math.max(0, Math.min(...al)); back = Math.max(0, Math.max(...al)); }
-  return { center, front, back, bearing: bearing(from, h.green) };
+  else { if (h.gFront) front = distY(from, h.gFront); if (h.gBack) back = distY(from, h.gBack); }
+  const r = curRound(), pin = r && r.pins && r.pins[h.n];
+  let pinD = center;
+  if (pin && isNum(pin.fromFront) && front != null) pinD = front + pin.fromFront;
+  else if (pin && isNum(pin.fromFront)) pinD = center - 12 + pin.fromFront;
+  else if (pin && front != null && back != null) pinD = front + (back - front) * ({ front: 0.25, center: 0.5, back: 0.75 }[pin.d]);
+  else if (pin) pinD = center + ({ front: -6, center: 0, back: 6 }[pin.d]);
+  return { center, front, back, pin: pinD, pinSet: !!pin, bearing: bearing(from, h.green) };
 }
 function hazardsAhead(from, gi) {
   const c = curCourse(), h = curHole(); if (!c || !h || !h.green || !from) return [];
@@ -534,7 +684,9 @@ function updateDistances() {
   $('#d-gps').style.color = pos && pos.acc > 20 ? 'var(--red)' : '';
   const w0 = env.wx;
   $('#d-wx').innerHTML = w0 ? `${WX(w0.code)[0]} ${Math.round(w0.temp)}℃ 湿度${Math.round(w0.hum)}%${w0.pop != null && w0.pop >= 20 ? ` ☔${w0.pop}%` : ''}` : '';
-  const gi = greenInfo(pos);
+  const gi = greenInfo(pos), rc = curRound(), cond = rc.cond, pin = h && rc.pins && rc.pins[h.n];
+  $('#d-pin').innerHTML = h && h.green ? (pin && gi ? `📍<b>ピン${pinLabel(pin)} ${fmt(gi.pin)}</b>` : '📍ピン位置') : '';
+  $('#d-cond').textContent = cond && isNum(cond.stimp) ? `🟢${cond.stimp}ft` : '🟢グリーン';
   if (!h || !h.green) {
     $('#d-front').textContent = '—'; $('#d-back').textContent = '—';
     $('#d-center').textContent = '未設定'; $('#d-center').style.fontSize = '26px';
@@ -582,6 +734,8 @@ function onMapTap(e) {
 function setGreenMode(on) { ui.setGreen = on; $('#set-green-banner').hidden = !on; }
 $('#cancel-set-green').onclick = () => setGreenMode(false);
 $('#d-wx').onclick = $('#d-plays').onclick = $('#d-wind').onclick = () => showWeatherDetail();
+$('#d-pin').onclick = () => pinForm();
+$('#d-cond').onclick = () => { const r = curRound(); condForm(r.cond, c => { r.cond = c; if (c.day) r.pins = Object.assign({}, r.pins || {}, pinsFromDay(c.day)); const co = curCourse(); if (co) co.lastCond = c; save(); updateDistances(); }, { course: curCourse() }); };
 function showWeatherDetail() {
   const w = env.wx, gi = greenInfo(ui.pos);
   if (!w) return toast('気象データを取得中です');
@@ -610,7 +764,9 @@ $('#hole-next').onclick = () => changeHole(1);
 $('#round-menu').onclick = () => {
   const h = curHole();
   const el = openModal(`<h2>${h.n}番ホール</h2>
-    <button class="btn block light" data-a="setgreen">🗺 地図をタップしてグリーン位置を設定</button>
+    <button class="btn block light" data-a="prep">🗺 ティー・グリーン位置を編集（手前・奥も）</button>
+    <button class="btn block light" data-a="setgreen">👆 地図をタップしてグリーン中央だけ設定</button>
+    <div class="grid2"><button class="btn light" data-a="pin">📍 ピン位置</button><button class="btn light" data-a="cond">🟢 グリーン状態</button></div><div style="height:8px"></div>
     <button class="btn block light" data-a="heregreen">📍 現在地をグリーンに設定（グリーン上で）</button>
     <div class="card"><div class="small muted" style="margin-bottom:6px">地図の種類</div><div class="chips">${Object.entries(BASE_LABEL).map(([k, v]) => `<button class="chip ${curBase === k ? 'on' : ''}" data-base="${k}">${v}</button>`).join('')}</div></div>
     <button class="btn block light" data-a="card">📋 スコアカード</button>
@@ -622,6 +778,9 @@ $('#round-menu').onclick = () => {
   $$('[data-a]', el).forEach(b => b.onclick = async () => {
     const a = b.dataset.a; closeModal();
     if (a === 'setgreen') setGreenMode(true);
+    if (a === 'prep') coursePrep(curCourse(), curRound().hole, () => { drawCourse(); drawHole(true); updateDistances(); });
+    if (a === 'pin') pinForm();
+    if (a === 'cond') $('#d-cond').onclick();
     if (a === 'heregreen') {
       if (!ui.pos) return toast('現在地がまだ取得できていません');
       const c = curCourse(), poly = (c.greens || []).find(g => inPoly(ui.pos, g));
@@ -683,7 +842,7 @@ function prevRoundOnCourse(rec) {
 }
 function endRound() {
   const r = curRound(), c = curCourse();
-  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null };
+  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null, cond: r.cond || null, pins: r.pins || {} };
   db.rounds.push(rec); db.activeRound = null; save(); stopPlay();
   const st = roundStats(rec), prev = prevRoundOnCourse(rec), ps = prev && roundStats(prev), hh = handicapHistory(), e = hh.out.find(x => x.r.id === rec.id);
   const el = openModal(`<h2>お疲れさまでした！</h2>
@@ -731,7 +890,7 @@ function roundText(r) {
     return `${n}番 Par${parOf(r, n)}${r.sis && r.sis[n] ? ' HC' + r.sis[n] : ''}: ${holeScore(s)}打（パット${s.putts ?? '?'}${s.pen ? ' ペナ' + s.pen : ''}${s.fw != null ? ' FW' + (s.fw ? '◯' : '×') : ''}）${shots ? ' ショット: ' + shots : ''}`;
   }).filter(Boolean).join('\n');
   const w = r.weather;
-  return `日付: ${new Date(r.date).toLocaleDateString('ja-JP')}\n合計: ${st.strokes}（パー${st.par}に対し${sgn(st.diff)}）パット${st.putts} 3パット${st.three} ペナルティ${st.pen} FWキープ${st.fwPct ?? '-'}% パーオン${st.girPct ?? '-'}% Par3平均${st.par3 ? st.par3.toFixed(2) : '-'} Par4平均${st.par4 ? st.par4.toFixed(2) : '-'} Par5平均${st.par5 ? st.par5.toFixed(2) : '-'}\n${w ? `気象: ${WX(w.code)[1]} ${isNum(w.temp) ? Math.round(w.temp) + '℃' : ''} ${isNum(w.hum) ? '湿度' + w.hum + '%' : ''} 風${r1(w.speed)}m/s(${dirName(w.dir)}から${isNum(w.gust) ? ' 最大' + r1(w.gust) : ''})\n` : ''}ホール別:\n${holes}`;
+  return `日付: ${new Date(r.date).toLocaleDateString('ja-JP')}\n合計: ${st.strokes}（パー${st.par}に対し${sgn(st.diff)}）パット${st.putts} 3パット${st.three} ペナルティ${st.pen} FWキープ${st.fwPct ?? '-'}% パーオン${st.girPct ?? '-'}% Par3平均${st.par3 ? st.par3.toFixed(2) : '-'} Par4平均${st.par4 ? st.par4.toFixed(2) : '-'} Par5平均${st.par5 ? st.par5.toFixed(2) : '-'}\n${w ? `気象: ${WX(w.code)[1]} ${isNum(w.temp) ? Math.round(w.temp) + '℃' : ''} ${isNum(w.hum) ? '湿度' + w.hum + '%' : ''} 風${r1(w.speed)}m/s(${dirName(w.dir)}から${isNum(w.gust) ? ' 最大' + r1(w.gust) : ''})\n` : ''}${r.cond ? `コンディション: ティー${r.cond.tee || '-'}、グリーン${isNum(r.cond.stimp) ? r.cond.stimp + 'ft(' + speedLabel(r.cond.stimp) + ')' : '不明'}、硬さ${r.cond.firm || '-'}${r.cond.memo ? '、メモ:' + r.cond.memo : ''}\n` : ''}ホール別:\n${holes}`;
 }
 async function reviewRound(rec) {
   const box = $('#rv-ai'); if (box) box.innerHTML = '<div class="ai-answer muted">AIが分析中…（20〜40秒ほど）</div>';
@@ -789,6 +948,14 @@ function caddieContext() {
   }
   if (ui.target && pos) lines.push(`プレーヤーが地図で指定した狙い所: 現在地から${Math.round(distY(pos, ui.target))}y` + (h.green ? `、そこからグリーンまで${Math.round(distY(ui.target, h.green))}y` : ''));
   if (h.tee && pos) lines.push(`ティーからの距離: ${Math.round(distY(h.tee, pos))}y`);
+  const cd = r.cond;
+  if (cd) lines.push(`使用ティー: ${cd.tee || '不明'}／グリーンスピード: ${isNum(cd.stimp) ? `${cd.stimp}フィート（${speedLabel(cd.stimp)}）` : '不明'}／グリーンの硬さ: ${cd.firm || '不明'}${cd.memo ? `／メモ: ${cd.memo}` : ''}`);
+  const pn = r.pins && r.pins[h.n];
+  if (gi) lines.push(pn ? `ピン位置: ${pinLabel(pn)}（ピンまで推定${Math.round(gi.pin)}y）` : 'ピン位置: 未入力（センターと仮定）');
+  if (h.tee && h.green) lines.push(`ホールの長さ(地図上のティー〜グリーン中央): 約${Math.round(distY(h.tee, h.green))}y`);
+  lines.push(`グリーンの傾斜: ${slopeText(h) || '未登録（不明）'}`);
+  const dh = cd && cd.day && cd.day.holes && cd.day.holes[h.n];
+  if (dh) lines.push(`本日の表示（ティー・ピン位置表より）: ${isNum(dh.yards) ? `本日のホール距離${dh.yards}y` : ''}${dh.teeNote ? `、ティー位置: ${dh.teeNote}` : ''}${dh.pinNote ? `、ピン: ${dh.pinNote}` : ''}`);
   const hist = holeHistoryText(c.id, h.n); if (hist) lines.push(`このホールの過去データ: ${hist}`);
   const today = db.shots.filter(x => x.roundId === r.id).map(x => `${clubById(x.clubId)?.name || '?'}:${Math.round(x.total)}y`);
   if (today.length) lines.push('今日のGPS実測ショット: ' + today.join(', '));
@@ -799,13 +966,14 @@ const CADDIE_SYSTEM = `あなたはツアー経験豊富なプロキャディで
 - 回答は音声で読み上げられるので、2〜4文・160字程度で簡潔に。記号や箇条書きは使わない。
 - 最初に結論（推奨番手と狙い所）、次に短い理由。
 - 必ず気象を考慮する：風（突風も）、気温（寒いとボールも体も飛ばない、暑いと飛ぶ）、気圧・標高による空気の重さ、雨（ランが減る・グリップ・ラフからのフライヤー）、降水確率。実質距離の簡易計算は参考にし、最終判断はプロとして行う。
+- 必ずグリーンの状態を考慮する：速い・硬いグリーンは止まりにくいので手前から転がす・奥のピンでもオーバー厳禁・下りのパットを残さない位置へ。遅い・柔らかいグリーンはピンまでキャリーで攻められる。ピン位置（手前・奥・左右）とハザード、グリーンの傾斜の関係で、上りのパットが残る安全サイドを示す。パットの質問には、グリーンスピードに合わせたタッチ（強さ）を具体的に助言する。
 - 本人の実測飛距離とばらつき・左右の傾向、今日の実測、このホールの過去の結果を重視し、大叩きを避けるマネジメントを基本にする。受けハンデがあるホールでは無理をしない選択肢も示す。
 - データにないこと（ライの細かい状態、ピン位置など）は「〜なら」と条件付きで触れる程度にする。`;
 $('#btn-caddie').onclick = () => openCaddie();
 function openCaddie(prefill = '') {
   if (db.settings.competition) { toast('競技モード中はAIアドバイスを使えません（設定で切替）', 3500); return; }
   const el = openModal(`<h2>🎤 AIキャディ</h2>
-    <div class="chips" style="margin-bottom:10px">${['何番で打つ？', 'どこを狙う？', 'このホールの攻め方は？', 'レイアップすべき？', '風と気温の影響は？'].map(q => `<button class="chip" data-q="${q}">${q}</button>`).join('')}</div>
+    <div class="chips" style="margin-bottom:10px">${['何番で打つ？', 'どこを狙う？', 'このホールの攻め方は？', 'レイアップすべき？', '風と気温の影響は？', 'パットはどう打つ？'].map(q => `<button class="chip" data-q="${q}">${q}</button>`).join('')}</div>
     <div class="row"><textarea id="cq" rows="2" class="grow" style="padding:10px;border:1px solid #cfd6d2;border-radius:10px" placeholder="例: ライが左足下がり。何番がいい？">${esc(prefill)}</textarea>
     <button class="btn" id="cmic" style="height:56px;width:56px;font-size:22px">🎤</button></div>
     <button class="btn block" id="cask" style="margin-top:10px">キャディに聞く</button><div id="cans"></div>`, () => stopSpeak());
@@ -865,6 +1033,164 @@ function searchCourseFlow(onDone, initial = '') {
   if (initial) go();
 }
 
+
+/* ---------------- 本日のティー・ピン位置表の読み取り ---------------- */
+function dayInfoSummary(d) {
+  const hs = Object.values(d.holes || {});
+  const nPin = hs.filter(h => isNum(h.pinFromFront) || h.pinDepth).length, nYd = hs.filter(h => isNum(h.yards)).length;
+  return `✅ 読み取り済み：${hs.length}ホール（距離 ${nYd}・ピン位置 ${nPin}）${isNum(d.stimp) ? `・グリーン ${d.stimp}ft` : ''}${d.tee ? `・${esc(d.tee)}ティー` : ''}`;
+}
+function pinsFromDay(day) {
+  const out = {}; if (!day || !day.holes) return out;
+  Object.values(day.holes).forEach(h => {
+    if (!isNum(h.n)) return;
+    const s = ['left', 'right', 'center'].includes(h.pinSide) ? h.pinSide : 'center';
+    if (isNum(h.pinFromFront)) out[h.n] = { d: h.pinDepth || 'center', s, fromFront: h.pinFromFront, fromSide: isNum(h.pinFromSide) ? h.pinFromSide : null };
+    else if (['front', 'center', 'back'].includes(h.pinDepth)) out[h.n] = { d: h.pinDepth, s };
+  });
+  return out;
+}
+async function readDaySheet(course, teeHint) {
+  const files = await pickFiles('#file-images'); if (!files.length) return null;
+  try {
+    showLoading(`画像を準備中…（${files.length}枚）`);
+    const imgs = []; for (const f of files.slice(0, 8)) imgs.push(await fileToJpegB64(f, 2000, 0.88));
+    showLoading('AIがティー・ピン位置を読み取り中…');
+    const txt = await callClaude({
+      system: 'あなたはゴルフ場の掲示物（本日のピン位置表・ティー位置表・スコアカードのヤーデージ）を正確に読み取るアシスタントです。JSONのみを出力します。',
+      images: imgs, maxTokens: 5000,
+      text: `画像（${imgs.length}枚）は、ゴルフ場でラウンド前に掲示・配布される「本日のティー位置・ピン位置」の表、ピンポジションシート、グリーンの図、またはスコアカードのヤーデージ欄です。複数枚の場合は前半・後半などの続きです。
+プレーヤーの使用ティーは「${teeHint || '不明'}」です（ティーの色やバック/レギュラー/フロント/レディースの表記がある場合は、それに該当する列を使う）。
+次の形式のJSONだけを返してください。
+{"course":"コース名|null","tee":"バック|レギュラー|フロント|レディース|null（使用ティーに対応する表記）","stimp":本日のグリーンスピード(フィート)|null,
+ "holes":[{"n":ホール番号,"par":数値|null,"yards":使用ティーからの本日の距離(ヤード)|null,"teeNote":"ティー位置の補足（例: 前方、+10y、後方 など）|null",
+   "pinFromFront":グリーン手前エッジからピンまでの距離(ヤード)|null,"pinSide":"left|center|right|null","pinFromSide":左右エッジからの距離(ヤード)|null,"pinDepth":"front|center|back|null","pinNote":"ピン位置の説明（例: 奥・右、手前から25y左から5y）|null","greenSlope":"グリーン図に傾斜の矢印・等高線・段の記載があればその説明（例: 奥から手前への下り、2段）|null"}]}
+ルール: ピンポジションの図（グリーンの絵に●印）の場合は、印の位置から手前/中/奥(pinDepth)と左/中/右(pinSide)を判断する。「15/5」「F15 L5」のような数字は手前から15y・左から5yの意味として読む（左右の数字はどちらの端からかに合わせて pinSide を left/right にする）。メートル表記はヤードに換算（×1.094）。読めない値はnull。`
+    });
+    hideLoading();
+    const d = parseJSON(txt), holes = {};
+    (d.holes || []).forEach(h => { if (isNum(h.n)) holes[h.n] = h; });
+    if (!Object.keys(holes).length) { toast('ティー・ピン位置を読み取れませんでした。表全体がはっきり写るように撮影してください', 5000); return null; }
+    // パーが読めていればコースにも反映（未設定のものだけ）
+    if (course && !course._virtual) { Object.values(holes).forEach(h => { const ch = course.holes.find(x => x.n === h.n); if (!ch) return; if (isNum(h.par) && !ch.green && !ch.tee) ch.par = h.par; if (h.greenSlope && !ch.slopeMemo) ch.slopeMemo = h.greenSlope; }); save(); }
+    toast(`${Object.keys(holes).length}ホール分を読み取りました`, 3000);
+    return { holes, stimp: isNum(d.stimp) ? d.stimp : null, tee: d.tee || null, at: Date.now() };
+  } catch (e) { hideLoading(); toast(e.message, 5000); return null; }
+}
+
+/* ---------------- スコア分析（統計タブ） ---------------- */
+function scoreTrendSVG(F) {
+  if (F.length < 2) return '<p class="small muted">18ホールのラウンドが2回以上になると推移グラフが表示されます。</p>';
+  const W = 330, H = 180, pl = 30, pr = 10, pt = 12, pb = 26, ys = F.map(x => x.s.strokes);
+  const lo = Math.floor((Math.min(...ys) - 3) / 5) * 5, hi = Math.ceil((Math.max(...ys) + 3) / 5) * 5;
+  const sx = i => pl + i * (W - pl - pr) / (F.length - 1), sy = v => pt + (hi - v) / ((hi - lo) || 1) * (H - pt - pb);
+  const ma = F.map((x, i) => avgOf(ys.slice(Math.max(0, i - 4), i + 1)));
+  const grid = []; for (let v = lo; v <= hi; v += (hi - lo) > 30 ? 10 : 5) grid.push(v);
+  const lbl = i => { const d = new Date(F[i].r.date); return `${String(d.getFullYear()).slice(2)}/${d.getMonth() + 1}`; };
+  const xl = [...new Set([0, Math.floor((F.length - 1) / 2), F.length - 1])];
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    ${grid.map(v => `<line x1="${pl}" x2="${W - pr}" y1="${sy(v)}" y2="${sy(v)}" stroke="#e3e7e4"/><text x="2" y="${sy(v) + 4}" font-size="10" fill="#6b7570">${v}</text>`).join('')}
+    <polyline fill="none" stroke="#86efac" stroke-width="2" points="${ys.map((v, i) => `${sx(i)},${sy(v)}`).join(' ')}"/>
+    <polyline fill="none" stroke="#14532d" stroke-width="2.5" points="${ma.map((v, i) => `${sx(i)},${sy(v)}`).join(' ')}"/>
+    ${F.map((x, i) => `<circle cx="${sx(i)}" cy="${sy(x.s.strokes)}" r="${F.length > 30 ? 3.5 : 5}" fill="${x.s.strokes === Math.min(...ys) ? '#f59e0b' : '#16a34a'}" stroke="#fff" stroke-width="1.5" data-rd="${x.r.id}" style="cursor:pointer"/>`).join('')}
+    ${xl.map(i => `<text x="${sx(i)}" y="${H - 6}" font-size="10" fill="#6b7570" text-anchor="${i === 0 ? 'start' : i === F.length - 1 ? 'end' : 'middle'}">${lbl(i)}</text>`).join('')}
+  </svg><div class="small muted">点＝各ラウンド（オレンジ＝ベスト・タップで詳細）、濃い線＝直近5ラウンドの平均</div>`;
+}
+function renderScoreStats(el, seg) {
+  const all = [...db.rounds].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const courses = [...new Map(all.map(r => [r.courseId, r.courseName])).entries()];
+  if (ui.scoreCourse && !courses.some(([id]) => id === ui.scoreCourse)) ui.scoreCourse = '';
+  const rs = ui.scoreCourse ? all.filter(r => r.courseId === ui.scoreCourse) : all;
+  const S = rs.map(r => ({ r, s: roundStats(r) })), F = S.filter(x => x.s.holes >= 18), H = F.filter(x => !x.s.totalOnly);
+  if (!all.length) {
+    el.innerHTML = seg + `<div class="card"><p>まだラウンドの記録がありません。</p><button class="btn block" id="sc-past">📝 過去のスコアを入力（スクショ・写真もOK）</button></div>`;
+    $('#sc-past', el).onclick = () => pastScoreFlow(); return;
+  }
+  const av = (arr, f) => { const v = arr.map(f).filter(isNum); return v.length ? avgOf(v) : null; };
+  const f1 = v => v == null ? '—' : (Math.round(v * 10) / 10).toString();
+  const best = F.length ? F.reduce((a, b) => a.s.strokes <= b.s.strokes ? a : b) : null;
+  const last5 = F.slice(-5), prev5 = F.slice(-10, -5), hi = handicapHistory().hi;
+  const box = (l, v, sub = '') => `<div class="stat-box"><small>${l}</small><b>${v}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const per = x => x.s.puttHoles >= 18 ? x.s.putts * 18 / x.s.puttHoles : null;
+  const row = (l, f, lowerBetter = true, unit = '') => { const a = av(last5, f), b = av(prev5, f), d = a != null && b != null ? a - b : null, good = d != null && Math.abs(d) >= 0.05 && ((d < 0) === lowerBetter); return `<tr><td>${l}</td><td><b>${f1(a)}${a != null ? unit : ''}</b></td><td>${f1(b)}${b != null ? unit : ''}</td><td style="color:${d != null && Math.abs(d) >= 0.05 ? (good ? '#15803d' : '#dc2626') : ''}">${d != null ? (d > 0 ? '+' : '') + f1(d) : ''}</td></tr>`; };
+  const kinds = { eagle: 0, birdie: 0, par: 0, bogey: 0, double: 0, worse: 0 }; H.forEach(x => Object.keys(kinds).forEach(k => kinds[k] += x.s.kinds[k]));
+  const kt = Object.values(kinds).reduce((a, b) => a + b, 0);
+  const KC = { eagle: ['イーグル↑', '#facc15'], birdie: ['バーディ', '#f87171'], par: ['パー', '#4ade80'], bogey: ['ボギー', '#93c5fd'], double: ['ダボ', '#3b82f6'], worse: ['トリ以上', '#1e3a8a'] };
+  // コース別：ホールごとの平均
+  let holeTable = '';
+  if (ui.scoreCourse) {
+    const ns = [...new Set(rs.flatMap(r => Object.keys(r.pars || {}).map(Number)))].sort((a, b) => a - b);
+    const hrows = ns.map(n => { const v = rs.map(r => holeScore((r.scores || {})[n])).filter(isNum); const p = rs.map(r => r.pars && r.pars[n]).find(isNum) || 4; return { n, p, avg: v.length ? avgOf(v) : null, best: v.length ? Math.min(...v) : null, cnt: v.length }; }).filter(x => x.avg != null);
+    const sorted = [...hrows].sort((a, b) => (b.avg - b.p) - (a.avg - a.p)), worst = new Set(sorted.slice(0, 3).map(x => x.n)), good = new Set(sorted.slice(-3).map(x => x.n));
+    holeTable = hrows.length ? `<h3>ホール別の平均（このコース）</h3><div class="card scroll-x"><table class="t"><tr><th>ホール</th><th>Par</th><th>平均</th><th>パー比</th><th>ベスト</th></tr>${hrows.map(x => `<tr style="${worst.has(x.n) ? 'background:#fef2f2' : good.has(x.n) ? 'background:#f0fdf4' : ''}"><td><b>${x.n}</b>${worst.has(x.n) ? ' <span class="small" style="color:#dc2626">苦手</span>' : good.has(x.n) ? ' <span class="small" style="color:#15803d">得意</span>' : ''}</td><td>${x.p}</td><td><b>${x.avg.toFixed(1)}</b></td><td>${(x.avg - x.p >= 0 ? '+' : '') + (x.avg - x.p).toFixed(1)}</td><td>${x.best}</td></tr>`).join('')}</table></div>` : '';
+  }
+  // 月ごとの一覧
+  const byMonth = {}; [...S].reverse().forEach(x => { const d = new Date(x.r.date), k = `${d.getFullYear()}年${d.getMonth() + 1}月`; (byMonth[k] = byMonth[k] || []).push(x); });
+  const list = Object.entries(byMonth).map(([m, xs]) => `<div class="small muted" style="margin:10px 0 2px;font-weight:700">${m}</div>${xs.map(x => `<div class="list-item" data-rd="${x.r.id}" style="padding:9px 0"><div style="min-width:34px;text-align:center"><b>${new Date(x.r.date).getDate()}</b><div class="small muted">日</div></div><div class="grow"><b>${esc(x.r.courseName)}</b><div class="small muted">${x.s.holes}H${x.s.puttHoles ? '・パット' + x.s.putts : ''}${x.s.girPct != null ? '・パーオン' + x.s.girPct + '%' : ''}${x.s.totalOnly ? '・合計のみ' : ''}</div></div><b style="font-size:21px">${x.s.strokes}</b><span class="small" style="min-width:34px;text-align:right;color:${x.s.diff <= 0 ? '#dc2626' : '#6b7570'}">${sgn(x.s.diff)}</span>${x.r.ai ? '<span class="badge" style="margin-left:4px">総評</span>' : ''}</div>`).join('')}`).join('');
+  el.innerHTML = seg + `
+    <div class="row" style="margin-bottom:10px"><select id="sc-course" class="grow" style="padding:9px;border:1px solid #cfd6d2;border-radius:10px"><option value="">すべてのコース（${all.length}ラウンド）</option>${courses.map(([id, nm]) => `<option value="${id}" ${id === ui.scoreCourse ? 'selected' : ''}>${esc(nm)}（${all.filter(r => r.courseId === id).length}）</option>`).join('')}</select><button class="btn small light" id="sc-past">＋入力</button></div>
+    <div class="grid3" style="margin-bottom:12px">
+      ${box('平均スコア', f1(av(last5, x => x.s.strokes)), '直近5R')}${box('ベスト', best ? best.s.strokes : '—', best ? new Date(best.r.date).toLocaleDateString('ja-JP') : '')}${box('ハンデ', hi != null ? hi.toFixed(1) : '—', '目安')}
+      ${box('平均パット', f1(av(last5, per)), '18H換算')}${box('FWキープ', av(last5, x => x.s.fwPct) != null ? Math.round(av(last5, x => x.s.fwPct)) + '%' : '—')}${box('パーオン', av(last5, x => x.s.girPct) != null ? Math.round(av(last5, x => x.s.girPct)) + '%' : '—')}
+    </div>
+    <h3>スコアの推移</h3><div class="card">${scoreTrendSVG(F)}</div>
+    ${prev5.length ? `<h3>最近5ラウンド vs その前の5ラウンド</h3><div class="card"><table class="t"><tr><th></th><th>最近</th><th>その前</th><th>差</th></tr>
+      ${row('スコア', x => x.s.strokes)}${row('パット(18H)', per)}${row('FWキープ', x => x.s.fwPct, false, '%')}${row('パーオン', x => x.s.girPct, false, '%')}${row('ペナルティ', x => x.s.totalOnly ? null : x.s.pen)}${row('3パット', x => x.s.puttHoles ? x.s.three : null)}${row('ダボ以上', x => x.s.totalOnly ? null : x.s.kinds.double + x.s.kinds.worse)}${row('Par3平均', x => x.s.par3)}${row('Par4平均', x => x.s.par4)}${row('Par5平均', x => x.s.par5)}</table></div>` : ''}
+    ${kt ? `<h3>スコアの内訳（ホールごとに入力したラウンド）</h3><div class="card"><div style="display:flex;height:22px;border-radius:6px;overflow:hidden">${Object.entries(kinds).filter(([, v]) => v).map(([k, v]) => `<div style="width:${v / kt * 100}%;background:${KC[k][1]}"></div>`).join('')}</div>
+      <div class="chips" style="margin-top:8px">${Object.entries(kinds).filter(([, v]) => v).map(([k, v]) => `<span class="small"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${KC[k][1]}"></span> ${KC[k][0]} ${Math.round(v / kt * 100)}%</span>`).join('')}</div></div>` : ''}
+    ${holeTable}
+    <button class="btn block accent" id="sc-ai" style="margin-top:12px">🤖 AIに傾向を分析してもらう</button><div id="sc-ai-box"></div>
+    <h3>ラウンド一覧（タップで詳細・総評）</h3><div class="card">${list}</div>`;
+  $('#sc-course', el).onchange = e => { ui.scoreCourse = e.target.value; renderStats(); };
+  $('#sc-past', el).onclick = () => pastScoreFlow({ courseId: ui.scoreCourse });
+  $$('[data-rd]', el).forEach(b => b.onclick = () => showRoundDetail(db.rounds.find(r => r.id === b.dataset.rd)));
+  $('#sc-ai', el).onclick = async () => {
+    const box = $('#sc-ai-box'); box.innerHTML = '<div class="ai-answer muted">AIが分析中…</div>';
+    const lines = S.slice(-25).map(x => `${new Date(x.r.date).toLocaleDateString('ja-JP')} ${x.r.courseName} ${x.s.holes}H: ${x.s.strokes}(${sgn(x.s.diff)})` + (x.s.totalOnly ? ' 合計のみ' : ` パット${x.s.puttHoles ? x.s.putts : '?'} FW${x.s.fwPct ?? '-'}% パーオン${x.s.girPct ?? '-'}% ペナ${x.s.pen} バーディ${x.s.kinds.birdie + x.s.kinds.eagle} ダボ以上${x.s.kinds.double + x.s.kinds.worse} Par3/4/5平均${f1(x.s.par3)}/${f1(x.s.par4)}/${f1(x.s.par5)}`)).join('\n');
+    try {
+      const ans = await callClaude({ system: 'あなたは経験豊富なゴルフコーチです。日本語で、データを根拠に具体的・前向きに。見出しは【】で短く、箇条書き中心で600字程度。', maxTokens: 1600,
+        text: `ゴルファーのスコアの傾向を分析してください。${ui.scoreCourse ? `（対象コース: ${courses.find(([id]) => id === ui.scoreCourse)[1]}）` : ''}\nハンディキャップ指数(目安): ${hi ?? '未算出'}\nラウンド履歴（古い順）:\n${lines}\n\nクラブ別飛距離:\n${bagSummaryForAI()}\n\n構成: 【全体の傾向】上達しているか／【強み】／【スコアを落としている一番の原因】データ根拠つき／【次の5ラウンドの目標】具体的な数値／【優先して練習すること】3つ` });
+      if ($('#sc-ai-box')) $('#sc-ai-box').innerHTML = `<div class="ai-answer">${esc(ans)}</div>`;
+    } catch (e) { if ($('#sc-ai-box')) $('#sc-ai-box').innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
+  };
+}
+
+/* ---------------- 履歴一覧（複数ラウンド）の一括取り込み ---------------- */
+const STD_PARS = [4, 4, 3, 5, 4, 4, 3, 4, 5];
+function makeParList(nHoles, par) {
+  const ps = []; for (let i = 0; i < nHoles; i++) ps.push(STD_PARS[i % 9]);
+  let d = (par || (nHoles === 9 ? 36 : 72)) - ps.reduce((a, b) => a + b, 0);
+  for (let i = 0; d < 0 && i < ps.length; i++) if (ps[i] === 5) { ps[i] = 4; d++; }
+  for (let i = 0; d > 0 && i < ps.length; i++) if (ps[i] === 3) { ps[i] = 4; d--; }
+  return ps;
+}
+function reviewRoundList(rounds) {
+  const items = rounds.filter(x => isNum(x.total));
+  if (!items.length) { toast('ラウンドの一覧を読み取れませんでした'); return; }
+  const el = openModal(`<h2>読み取ったラウンド（${items.length}件）</h2>
+    <p class="small muted">日付・コース名・スコアを確認して保存してください。合計スコアのみの記録として登録します（ホールごとの内容はあとから編集で追加できます）。</p>
+    <datalist id="rl-courses">${db.courses.map(c => `<option value="${esc(c.name)}">`).join('')}</datalist>
+    ${items.map((x, i) => `<div class="card" data-i="${i}" style="padding:10px"><div class="row"><input type="checkbox" class="ck" checked style="width:20px;height:20px"><input type="date" class="dt grow" value="${esc(x.date && /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? x.date : '')}" max="${todayStr()}" style="padding:7px;border:1px solid #cfd6d2;border-radius:8px"></div>
+      <input class="cn" list="rl-courses" value="${esc(x.course || '')}" placeholder="コース名" style="width:100%;margin:6px 0;padding:8px;border:1px solid #cfd6d2;border-radius:8px">
+      <div class="grid3"><label class="f" style="margin:0">スコア<input class="tt" inputmode="numeric" value="${x.total}"></label><label class="f" style="margin:0">パット<input class="pt" inputmode="numeric" value="${isNum(x.putts) ? x.putts : ''}"></label><label class="f" style="margin:0">ホール<select class="hn"><option ${x.holes === 9 ? '' : 'selected'}>18</option><option ${x.holes === 9 ? 'selected' : ''}>9</option></select></label></div></div>`).join('')}
+    <button class="btn block" id="rl-save">選んだラウンドを保存</button>`);
+  $('#rl-save', el).onclick = () => {
+    let n = 0;
+    const chosen = $$('[data-i]', el).filter(card => $('.ck', card).checked);
+    const miss = chosen.filter(card => !$('.dt', card).value || !num($('.tt', card).value)).length;
+    if (miss) { toast(`日付かスコアが空のものが${miss}件あります（保存しない場合はチェックを外してください）`, 4500); return; }
+    chosen.forEach(card => {
+      const date = $('.dt', card).value, name = $('.cn', card).value.trim() || '名称不明のコース', tot = num($('.tt', card).value), nh = +$('.hn', card).value;
+      let c = db.courses.find(x => x.name === name);
+      if (!c) { const ps = makeParList(nh); c = { id: uid(), name, source: 'manual', holes: ps.map((p, i) => ({ n: i + 1, par: p, si: null, tee: null, green: null, greenPoly: null, line: null })), greens: [], fairways: [], tees: [], hazards: [], rating: null, slope: null, created: Date.now() }; db.courses.push(c); }
+      db.rounds.push({ id: uid(), courseId: c.id, courseName: c.name, date: dateToISO(date), totalOnly: tot, puttsTotal: num($('.pt', card).value), scores: {}, track: {}, past: true, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: {}, rating: c.rating || null, slope: c.slope || null });
+      n++;
+    });
+    save(); closeModal(); toast(`${n}ラウンドを登録しました。コースのパーは標準(72)で作成しています（✏️で修正できます）`, 5000);
+    ui.statsView = 'score'; switchTab('stats');
+  };
+}
+
 /* ---------------- 過去のスコア入力 ---------------- */
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const dateToISO = s => new Date((s || todayStr()) + 'T09:00:00').toISOString();
@@ -876,8 +1202,8 @@ function courseFromRec(rec) { // コースが削除されていても編集で�
 function pastScoreFlow(state = {}) {
   const st = Object.assign({ courseId: '', date: todayStr(), mode: 'hole' }, state);
   const el = openModal(`<h2>📝 過去のスコアを入力</h2>
-    <button class="btn block accent" id="ps-cam">📷 スコアカードを撮影して読み取る</button>
-    <p class="small muted" style="margin:-2px 0 12px">紙のスコアカードやスコア管理アプリの画面を撮ると、AIがホールごとの打数・パットを読み取ります。</p>
+    <button class="btn block accent" id="ps-cam">📷 写真・スクリーンショットから読み込む（複数枚OK）</button>
+    <p class="small muted" style="margin:-2px 0 12px">紙のスコアカードの写真や、スコア管理アプリ・Webのスクリーンショットを選んでください。前半・後半の2枚や、アプリの履歴一覧（複数ラウンド）にも対応します。</p>
     <label class="f">コース<select id="ps-course"><option value="">選択してください</option>${db.courses.map(c => `<option value="${c.id}" ${c.id === st.courseId ? 'selected' : ''}>${esc(c.name)}（${c.holes.length}H）</option>`).join('')}</select></label>
     <div class="grid2"><button class="btn small ghost" id="ps-search">🔍 コースを検索</button><button class="btn small ghost" id="ps-new">＋ 名前だけで作成</button></div>
     <label class="f" style="margin-top:12px">プレー日<input type="date" id="ps-date" value="${esc(st.date)}" max="${todayStr()}"></label>
@@ -963,24 +1289,28 @@ function scoreGridForm({ course, date, rec, values }) {
   };
 }
 async function scorecardPhotoFlow(state) {
-  const file = await pickFile('#file-image'); if (!file) return;
+  const files = await pickFiles('#file-images'); if (!files.length) return;
   try {
-    showLoading('画像を準備中…');
-    const b64 = await fileToJpegB64(file, 2000, 0.9);
-    showLoading('AIがスコアカードを読み取り中…');
+    showLoading(`画像を準備中…（${files.length}枚）`);
+    const imgs = []; for (const f of files.slice(0, 8)) imgs.push(await fileToJpegB64(f, 2000, 0.88));
+    showLoading('AIがスコアを読み取り中…');
     const txt = await callClaude({
-      system: 'あなたはゴルフのスコアカードを正確に書き起こすアシスタントです。JSONのみを出力します。',
-      images: [b64], maxTokens: 4000,
-      text: `この画像はゴルフのスコアカード（紙、またはスコア管理アプリの画面）です。読み取って次の形式のJSONだけを返してください。
-{"course":"コース名（読めなければnull）","date":"YYYY-MM-DD（読めなければnull）","rating":数値|null,"slope":数値|null,
+      system: 'あなたはゴルフのスコアカードやスコア管理アプリの画面を正確に書き起こすアシスタントです。JSONのみを出力します。',
+      images: imgs, maxTokens: 8000,
+      text: `画像（${imgs.length}枚）はゴルフのスコアに関するもの（紙のスコアカードの写真、スコア管理アプリやWebサイトのスクリーンショット等）です。まず種類を判定し、JSONだけを返してください。
+A) 1ラウンドのスコアカード（複数枚なら前半・後半など同じラウンドの続き）→
+{"kind":"card","course":"コース名|null","date":"YYYY-MM-DD|null","rating":数値|null,"slope":数値|null,
  "holes":[{"n":1,"par":4,"hdcp":ハンディキャップ順位|null,"yards":数値|null}],
- "players":[{"name":"名前（無ければ「プレーヤー1」など）","scores":[{"n":1,"strokes":打数,"putts":パット数|null}]}]}
-ルール: OUT/IN/TOTALなどの合計列は含めない。パット数が打数と並べて書かれている場合（例「5/2」「5(2)」や小さい数字）はputtsに入れる。+1や−1のようにパーとの差で書かれている場合は打数に直す。空欄のホールは含めない。読めない値はnull。`
+ "players":[{"name":"名前（無ければ「プレーヤー1」）","scores":[{"n":1,"strokes":打数,"putts":パット数|null}]}]}
+B) 複数ラウンドの一覧（アプリの履歴・スコア一覧画面など）→
+{"kind":"list","rounds":[{"date":"YYYY-MM-DD|null","course":"コース名|null","total":合計スコア,"putts":合計パット|null,"holes":18または9}]}
+ルール: OUT/IN/TOTAL等の合計列はAのscoresに含めない。パット数が「5/2」「5(2)」や小さい数字で併記されていればputtsに入れる。+1/−1のようにパーとの差で書かれていれば打数に直す。年が書かれていない日付は画面内の他の情報から推定し、わからなければnull。読めない値はnull。`
     });
     hideLoading();
     const d = parseJSON(txt);
+    if (d.kind === 'list' || (!d.players && d.rounds)) return reviewRoundList(d.rounds || []);
     const players = (d.players || []).filter(p => p.scores && p.scores.some(s => isNum(s.strokes)));
-    if (!players.length) { toast('スコアを読み取れませんでした。カード全体がはっきり写るように撮影してください', 5000); return; }
+    if (!players.length) { toast('スコアを読み取れませんでした。スコア部分がはっきり写るように撮影してください', 5000); return; }
     const use = p => applyScorecard(d, p, state);
     if (players.length === 1) return use(players[0]);
     const el = openModal(`<h2>どのプレーヤーのスコアですか？</h2>${players.map((p, i) => `<div class="list-item"><div class="grow"><b>${esc(p.name)}</b><div class="small muted">合計 ${p.scores.reduce((a, s) => a + (s.strokes || 0), 0)}</div></div><button class="btn small" data-i="${i}">これ</button></div>`).join('')}`);

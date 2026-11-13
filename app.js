@@ -95,6 +95,13 @@ window.handleBack = function () {
 };
 
 // ---------- 画像 ----------
+function pickFiles(sel) {
+  return new Promise(res => {
+    const inp = $(sel); inp.value = '';
+    inp.onchange = () => res([...inp.files]);
+    inp.click();
+  });
+}
 function pickFile(sel) {
   return new Promise(res => {
     const inp = $(sel); inp.value = '';
@@ -316,7 +323,7 @@ function bagSummaryForAI() {
 /* =========================================================
    タブ
    ========================================================= */
-const ui = { tab: 'round', pos: null, setGreen: false, target: null, statsSrc: 'all', statsClub: null, highlight: [], rangeClub: null, rangeDir: 'C', rangeQ: 2, rangeCarry: null };
+const ui = { statsView: 'score', scoreCourse: '', tab: 'round', pos: null, setGreen: false, target: null, statsSrc: 'all', statsClub: null, highlight: [], rangeClub: null, rangeDir: 'C', rangeQ: 2, rangeCarry: null };
 function switchTab(tab) {
   ui.tab = tab;
   $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -393,7 +400,7 @@ function reviewMonitorRows(rows, device, sessionId, after) {
     if (missing) { toast(`番手が未選択の行が${missing}件あります`); return; }
     save(); closeModal(); toast(`${cnt}球を保存しました`);
     ui.highlight = [...added];
-    if (after) after([...added]); else { ui.statsSrc = 'all'; ui.statsClub = added.size === 1 ? [...added][0] : null; switchTab('stats'); }
+    if (after) after([...added]); else { ui.statsView = 'club'; ui.statsSrc = 'all'; ui.statsClub = added.size === 1 ? [...added][0] : null; switchTab('stats'); }
   };
 }
 
@@ -565,7 +572,7 @@ function clubForm(c) {
   };
   if (!isNew) {
     $('#cf-del', el).onclick = async () => { closeModal(); const n = db.shots.filter(s => s.clubId === c.id).length; if (await confirmBox(`${c.name} を削除しますか？${n ? `（ショットデータ${n}件も削除されます）` : ''}`, '削除')) { db.clubs = db.clubs.filter(x => x.id !== c.id); db.shots = db.shots.filter(s => s.clubId !== c.id); save(); renderClubs(); } };
-    $('#cf-stats', el).onclick = () => { closeModal(); ui.statsClub = c.id; switchTab('stats'); };
+    $('#cf-stats', el).onclick = () => { closeModal(); ui.statsView = 'club'; ui.statsClub = c.id; switchTab('stats'); };
   }
 }
 async function clubCameraFlow() {
@@ -611,10 +618,13 @@ const SRC = { all: 'すべて', range: '練習場(手入力)', monitor: '計測�
 function renderStats() {
   $('#topinfo').textContent = `${db.shots.length}球`;
   const el = $('#stats-root');
-  if (ui.statsClub && clubById(ui.statsClub)) return renderClubDetail(el, clubById(ui.statsClub));
+  if (ui.statsView === 'club' && ui.statsClub && clubById(ui.statsClub)) return renderClubDetail(el, clubById(ui.statsClub));
   ui.statsClub = null;
+  const seg = `<div class="seg" style="margin-bottom:12px"><button data-view="score" class="${ui.statsView === 'score' ? 'on' : ''}">📈 スコア分析</button><button data-view="club" class="${ui.statsView === 'club' ? 'on' : ''}">🏌️ クラブ飛距離</button></div>`;
+  const bindSeg = () => $$('[data-view]', el).forEach(b => b.onclick = () => { ui.statsView = b.dataset.view; renderStats(); });
+  if (ui.statsView === 'score') { $('#topinfo').textContent = `${db.rounds.length}ラウンド`; renderScoreStats(el, seg); bindSeg(); return; }
   const rows = sortedClubs().map(c => ({ c, st: clubStats(c.id, ui.statsSrc) })).filter(x => x.st.n);
-  el.innerHTML = `<h2>番手別の統計</h2>
+  el.innerHTML = seg + `<h2>番手別の統計</h2>
     <div class="card"><button class="btn block" id="st-cam">📷 計測データの画像を読み込む</button><p class="small muted" style="margin:2px 0 0;line-height:1.6">弾道測定器・練習場モニター・アプリ画面のスクリーンショットを撮影/選択すると、登録クラブごとの統計に反映されます。</p></div>
     <div class="chips" style="margin-bottom:10px">${Object.entries(SRC).map(([k, v]) => `<button class="chip ${ui.statsSrc === k ? 'on' : ''}" data-src="${k}">${v}</button>`).join('')}</div>
     ${rows.length ? `<div class="card scroll-x"><table class="t"><tr><th>番手</th><th>球数</th><th>キャリー</th><th>最大</th><th>ばらつき</th><th>トータル</th><th>傾向</th></tr>
@@ -622,6 +632,7 @@ function renderStats() {
       </table><div class="small muted" style="margin-top:6px">行をタップすると詳細（散布図・推移）を表示します。単位: ${U() === 'm' ? 'メートル' : 'ヤード'}</div></div>
       <h3>飛距離の階段</h3><div class="card">${gappingChart()}</div>`
       : '<p class="muted">この条件のデータはまだありません。練習場モードで記録するか、計測データの画像を読み込んでください。</p>'}`;
+  bindSeg();
   $('#st-cam').onclick = () => importMonitorFlow({});
   $$('[data-src]', el).forEach(b => b.onclick = () => { ui.statsSrc = b.dataset.src; renderStats(); });
   $$('[data-c]', el).forEach(r => r.onclick = () => { ui.statsClub = r.dataset.c; renderStats(); });
