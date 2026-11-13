@@ -1,0 +1,34 @@
+name: 日本のゴルフ場一覧を更新
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 1 * *'   # 毎月1日 3:00 (JST)
+  push:
+    branches: [ main ]
+    paths:
+      - 'scripts/build_courses.py'
+      - '.github/workflows/update-courses.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: OpenStreetMapからゴルフ場を取得
+        run: python scripts/build_courses.py
+      - name: 変更があればコミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/courses-jp.json
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "ゴルフ場一覧を更新 ($(date +%Y-%m-%d))"
+          git push
