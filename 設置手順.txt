@@ -1,0 +1,41 @@
+AIキャディ Web版 設置手順（GitHub Pages・無料）
+
+■ 公開する（パソコンで作業すると簡単です）
+1. https://github.com でアカウントを作る（無料）
+2. 右上の「＋」→「New repository」
+   Repository name: aicaddie / Public を選択 →「Create repository」
+3. 表示された画面の「uploading an existing file」をクリック
+4. このフォルダの中身（index.html, app.js, round.js, style.css, sw.js,
+   manifest.webmanifest, .nojekyll, lib フォルダ, icons フォルダ）を
+   まとめてドラッグ＆ドロップ →「Commit changes」
+   ※ .nojekyll が見えない場合は無くても動きます
+5. リポジトリの「Settings」→ 左の「Pages」
+   Source:「Deploy from a branch」/ Branch:「main」「/(root)」→「Save」
+6. 1〜2分後、 https://（ユーザー名）.github.io/aicaddie/ で開けるようになります
+
+■ スマホに入れる
+7. AndroidのChromeで上のURLを開く
+8. 右上「⋮」→「ホーム画面に追加」または「アプリをインストール」
+   （アプリの「設定」タブにも「ホーム画面に追加」ボタンが出ます）
+9. 初回、位置情報の許可を求められたら「許可」
+
+■ AIを使う（Anthropic APIキー）
+10. https://console.anthropic.com でAPIキーを発行（従量課金）
+11. アプリの「設定」に貼り付けて「接続テスト」
+
+■ Google衛星写真を使う（任意）
+12. https://console.cloud.google.com でプロジェクトを作成し、請求先アカウントを設定
+13. 「APIとサービス」→「ライブラリ」で「Map Tiles API」を有効にする
+14. 「認証情報」→「認証情報を作成」→「APIキー」
+    キーの制限：アプリケーションの制限＝「ウェブサイト」に
+      https://（ユーザー名）.github.io/*
+    API の制限＝「Map Tiles API」
+15. アプリの「設定」に貼り付けて「Google接続テスト」→ 地図の種類を「Google衛星写真」に
+
+■ アップデートするとき
+GitHubで同じファイルを上書きアップロードするだけ。アプリは次回起動時に自動で新しくなります。
+
+■ データについて
+クラブ・ショット・スコアなどはスマホの中（ブラウザの保存領域）に保存されます。
+機種変更やChromeのデータ削除の前に「設定 → バックアップ保存」をしてください。
+APIキーはスマホの中だけに保存され、GitHubには公開されません。

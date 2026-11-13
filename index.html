@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#14532d">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<title>AIキャディ</title>
+<link rel="stylesheet" href="lib/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">⛳ AIキャディ</div>
+  <div id="topinfo"></div>
+</header>
+
+<main>
+  <!-- ===== ラウンド ===== -->
+  <section id="view-round" class="view active">
+    <div id="round-start" class="pad"></div>
+    <div id="round-play" hidden>
+      <div id="map"></div>
+      <div class="hole-bar">
+        <button class="icon-btn" id="hole-prev" aria-label="前のホール">◀</button>
+        <div class="hole-title"><span id="hole-label">H1</span><small id="hole-par">Par 4</small></div>
+        <button class="icon-btn" id="hole-next" aria-label="次のホール">▶</button>
+        <button class="icon-btn" id="round-menu" aria-label="メニュー">⋯</button>
+      </div>
+      <div id="set-green-banner" class="banner" hidden>地図でグリーンの中心をタップしてください <button id="cancel-set-green" class="btn small ghost">やめる</button></div>
+      <div class="dist-panel">
+        <div class="dist-row">
+          <div class="dist"><small>手前</small><b id="d-front">—</b></div>
+          <div class="dist main"><small>センター</small><b id="d-center">—</b></div>
+          <div class="dist"><small>奥</small><b id="d-back">—</b></div>
+        </div>
+        <div class="dist-sub">
+          <span id="d-plays"></span>
+          <span id="d-wind"></span>
+          <span id="d-wx"></span>
+          <span id="d-gps" class="muted">GPS取得中…</span>
+        </div>
+        <div id="target-info" class="target-info" hidden></div>
+        <div id="pending-info" class="pending-info" hidden></div>
+        <div class="round-actions">
+          <button class="act primary" id="btn-caddie">🎤<span>キャディ</span></button>
+          <button class="act" id="btn-shot">🏌️<span>ショット</span></button>
+          <button class="act" id="btn-measure">📏<span>計測</span></button>
+          <button class="act" id="btn-score">📝<span id="score-mini">スコア</span></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 練習場 ===== -->
+  <section id="view-range" class="view"><div class="pad" id="range-root"></div></section>
+
+  <!-- ===== クラブ ===== -->
+  <section id="view-clubs" class="view"><div class="pad" id="clubs-root"></div></section>
+
+  <!-- ===== 統計 ===== -->
+  <section id="view-stats" class="view"><div class="pad" id="stats-root"></div></section>
+
+  <!-- ===== 設定 ===== -->
+  <section id="view-settings" class="view"><div class="pad" id="settings-root"></div></section>
+</main>
+
+<nav id="tabbar">
+  <button data-tab="round" class="active">⛳<span>ラウンド</span></button>
+  <button data-tab="range">🎯<span>練習場</span></button>
+  <button data-tab="clubs">🏌️<span>クラブ</span></button>
+  <button data-tab="stats">📊<span>統計</span></button>
+  <button data-tab="settings">⚙️<span>設定</span></button>
+</nav>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="sheet"><div class="sheet-handle"></div><div id="modal-body"></div></div>
+</div>
+<div id="loading" class="loading" hidden><div class="spinner"></div><div id="loading-msg">処理中…</div></div>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="file-image" accept="image/*" hidden>
+<input type="file" id="file-json" accept="application/json,.json,text/plain" hidden>
+
+<script src="lib/leaflet.js"></script>
+<script src="app.js"></script>
+<script src="round.js"></script>
+</body>
+</html>
