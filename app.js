@@ -148,14 +148,19 @@ async function callClaude({ system, text, images = [], maxTokens = 1200 }) {
   try {
     r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      headers: Object.assign({ 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, (db.settings.workspaceId || '').trim() ? { 'anthropic-workspace-id': db.settings.workspaceId.trim() } : {}),
       body: JSON.stringify({ model: db.settings.model || 'claude-sonnet-5-5', max_tokens: maxTokens, system, messages: [{ role: 'user', content }] })
     });
   } catch (e) { throw new Error('AIに接続できませんでした（通信状況を確認してください）'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
-    if (r.status === 401) throw new Error('APIキーが正しくありません（設定タブで確認）');
-    throw new Error(j?.error?.message || ('AIエラー ' + r.status));
+    const m = j?.error?.message || '';
+    if (r.status === 401) throw new Error('APIキーが正しくありません。コピーし直して貼り付けてください（前後の空白に注意）');
+    if (/credit balance/i.test(m)) throw new Error('APIのクレジット残高がありません。platform.claude.com の「Billing」でクレジットを購入してください');
+    if (/workspace/i.test(m)) throw new Error('このAPIキーはワークスペースの指定が必要な種類です。ワークスペースを選んで作ったキーに替えるか、設定の「ワークスペースID」を入力してください');
+    if (/model/i.test(m) && r.status === 404) throw new Error('選んだAIモデルが使えません。設定でほかのモデルを選んでください');
+    if (r.status === 429) throw new Error('AIの利用が混み合っています。少し待ってからもう一度お試しください');
+    throw new Error(m || ('AIエラー ' + r.status));
   }
   return (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
 }
@@ -668,7 +673,8 @@ function renderSettings() {
   el.innerHTML = `<h2>設定</h2>
     <div class="card">
       <label class="f">Anthropic APIキー（AI機能に必要）<input id="s-key" type="password" value="${esc(s.apiKey)}" placeholder="sk-ant-..." autocomplete="off"></label>
-      <p class="small muted" style="line-height:1.6;margin-top:-4px">console.anthropic.com でAPIキーを発行して貼り付けてください。キーはこの端末内にだけ保存されます。AIを使うたびにAPI利用料（従量課金）がかかります。</p>
+      <p class="small muted" style="line-height:1.6;margin-top:-4px">platform.claude.com（Claude Console）でAPIキーを発行して貼り付けてください。キーはこの端末内にだけ保存されます。AIを使うたびに、購入したクレジットから利用料が引かれます。</p>
+      <label class="f">ワークスペースID（通常は空欄でOK）<input id="s-ws" value="${esc(s.workspaceId || '')}" placeholder="wrkspc_..." autocomplete="off"></label>
       <label class="f">AIモデル<select id="s-model">
         <option value="claude-sonnet-5-5">Claude Sonnet 5.5（おすすめ・バランス）</option>
         <option value="claude-haiku-5-5">Claude Haiku 5.5（速い・安い）</option>
@@ -699,6 +705,7 @@ function renderSettings() {
   $('#s-map').onchange = e => { s.mapProvider = e.target.value; save(); if (map) setBase(s.mapProvider); if (s.mapProvider === 'google' && !s.googleKey) toast('下の欄にGoogle Maps APIキーを入力してください'); };
   $('#s-gkey').onchange = e => { s.googleKey = e.target.value.trim(); s.gSession = null; save(); toast('Google Maps APIキーを保存しました'); if (map && s.mapProvider === 'google') setBase('google'); };
   $('#s-key').onchange = e => { s.apiKey = e.target.value.trim(); save(); toast('APIキーを保存しました'); };
+  $('#s-ws').onchange = e => { s.workspaceId = e.target.value.trim(); save(); };
   $('#s-model').onchange = e => { s.model = e.target.value; save(); };
   $('#s-unit').onchange = e => { s.unit = e.target.value; save(); };
   $('#s-voice').onchange = e => { s.voice = e.target.checked; save(); };
@@ -710,12 +717,12 @@ function renderSettings() {
   };
   if ($('#s-install')) $('#s-install').onclick = async () => { const p = window.__installPrompt; if (!p) return; p.prompt(); await p.userChoice; window.__installPrompt = null; $('#install-card').hidden = true; };
   $('#s-test').onclick = async () => {
-    s.apiKey = $('#s-key').value.trim(); save();
+    s.apiKey = $('#s-key').value.trim(); s.workspaceId = $('#s-ws').value.trim(); save();
     try { showLoading('接続テスト中…'); const t = await callClaude({ system: '日本語で一言だけ返す', text: 'ゴルファーに短い挨拶を', maxTokens: 60 }); hideLoading(); toast('✅ 接続OK：' + t, 4000); }
     catch (e) { hideLoading(); toast('❌ ' + e.message, 5000); }
   };
   $('#s-export').onclick = () => {
-    const json = JSON.stringify(Object.assign({}, db, { settings: Object.assign({}, db.settings, { apiKey: '', googleKey: '', gSession: null }) }));
+    const json = JSON.stringify(Object.assign({}, db, { settings: Object.assign({}, db.settings, { apiKey: '', googleKey: '', gSession: null, workspaceId: '' }) }));
     const name = `aicaddie-backup-${new Date().toISOString().slice(0, 10)}.json`;
     if (Bridge && Bridge.saveFile) { Bridge.saveFile(name, json); return; }
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' })); a.download = name; a.click();
