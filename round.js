@@ -1424,7 +1424,7 @@ function pastScoreFlow(state = {}) {
   const st = Object.assign({ courseId: '', date: todayStr(), mode: 'hole' }, state);
   const el = openModal(`<h2>📝 過去のスコアを入力</h2>
     <button class="btn block accent" id="ps-cam">📷 写真・スクリーンショットから読み込む（複数枚OK）</button>
-    <p class="small muted" style="margin:-2px 0 12px">紙のスコアカードの写真や、スコア管理アプリ・Webのスクリーンショットを選んでください。前半・後半の2枚や、アプリの履歴一覧（複数ラウンド）にも対応します。</p>
+    <p class="small muted" style="margin:-2px 0 12px">紙のスコアカードの写真や、Garmin Golfなどスコア管理アプリのスクリーンショットを選んでください。前半・後半の2枚や、アプリのラウンド履歴一覧（複数ラウンド）にも対応します。</p>
     <label class="f">コース<select id="ps-course"><option value="">選択してください</option>${db.courses.map(c => `<option value="${c.id}" ${c.id === st.courseId ? 'selected' : ''}>${esc(c.name)}（${c.holes.length}H）</option>`).join('')}</select></label>
     <div class="grid2"><button class="btn small ghost" id="ps-search">🔍 コースを検索</button><button class="btn small ghost" id="ps-new">＋ 名前だけで作成</button></div>
     <label class="f" style="margin-top:12px">プレー日<input type="date" id="ps-date" value="${esc(st.date)}" max="${todayStr()}"></label>

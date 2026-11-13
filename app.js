@@ -250,6 +250,8 @@ function clubKey(s) {
   let m;
   if (/^(DR|DRIVER|ドライバー|1W|W1)$/.test(s) || /DRIVER|ドライバー/.test(s)) return 'DR';
   if (/^(PT|PUTTER|パター)/.test(s)) return 'PT';
+  const W = { PITCHINGWEDGE: 'PW', PITCHING: 'PW', GAPWEDGE: 'GW', APPROACHWEDGE: 'AW', SANDWEDGE: 'SW', LOBWEDGE: 'LW', ピッチングウェッジ: 'PW', アプローチウェッジ: 'AW', サンドウェッジ: 'SW', ギャップウェッジ: 'GW', ロブウェッジ: 'LW' };
+  if (W[s]) return W[s];
   if ((m = s.match(/^(\d{1,2})(W|FW|WOOD|ウッド|番ウッド)$/))) return m[1] === '1' ? 'DR' : m[1] + 'W';
   if ((m = s.match(/^W(\d{1,2})$/))) return m[1] + 'W';
   if ((m = s.match(/^(\d)(U|UT|H|HY|HYBRID|ユーティリティ|番ユーティリティ)$/))) return m[1] + 'U';
@@ -260,6 +262,13 @@ function clubKey(s) {
   if ((m = s.match(/^(\d{2})(°|度|DEG)?$/)) && +m[1] >= 44 && +m[1] <= 64) return 'L' + m[1];
   if (/^\d$/.test(s)) return s + 'I';
   return s;
+}
+function canonicalClubName(label) {
+  const k = clubKey(label);
+  if (k === 'DR') return '1W'; if (k === 'PT') return 'PT';
+  if (/^\d{1,2}[WUI]$/.test(k) || /^(PW|AW|GW|SW|LW|UW|AS)$/.test(k)) return k;
+  if (/^L\d{2}$/.test(k)) return k.slice(1) + '°';
+  return String(label).normalize('NFKC');
 }
 function matchClub(label) {
   const k = clubKey(label); if (!k) return null;
@@ -304,6 +313,9 @@ function clubStats(clubId, src = 'all') {
 function clubCarry(c) {
   const st = clubStats(c.id);
   // 基準は中央値（トップやダフリなどのミスに引っ張られない）
+  const ext = c.ext && isNum(c.ext.carry) ? { v: c.ext.carry, mean: c.ext.carry, sd: c.ext.sd || null, n: c.ext.shots || 0, min: c.ext.low, max: c.ext.max, how: c.ext.src || '他アプリ' } : null;
+  if (st.carry && st.carry.n >= 8) return { v: st.carry.med, mean: st.carry.mean, sd: st.carry.rsd, n: st.carry.n, min: st.carry.min, max: st.carry.max, how: '実測' };
+  if (ext) return ext;
   if (st.carry && st.carry.n >= 3) return { v: st.carry.med, mean: st.carry.mean, sd: st.carry.rsd, n: st.carry.n, min: st.carry.min, max: st.carry.max, how: '実測' };
   if (st.total && st.total.n >= 3) return { v: st.total.med * 0.93, mean: st.total.mean * 0.93, sd: st.total.rsd, n: st.total.n, how: 'コース実測から推定' };
   if (isNum(c.manualCarry)) return { v: c.manualCarry, sd: null, n: 0, how: '自己申告' };
@@ -317,7 +329,7 @@ function bagSummaryForAI() {
   return sortedClubs().filter(c => c.type !== 'putter').map(c => {
     const cc = clubCarry(c), st = clubStats(c.id);
     let s = `${c.name}`;
-    if (cc) s += `: キャリー中央値${Math.round(cc.v)}y` + (cc.n ? `（平均${Math.round(cc.mean)}y、普段の幅±${Math.round(cc.sd)}y、${cc.n}球${isNum(cc.min) ? `、最短${Math.round(cc.min)}〜最長${Math.round(cc.max)}y` : ''}）` : '') + `[${cc.how}]`;
+    if (cc) s += `: ${cc.how === '実測' ? 'キャリー中央値' : 'キャリー目安'}${Math.round(cc.v)}y` + (cc.n ? `（平均${Math.round(cc.mean)}y${isNum(cc.sd) ? `、普段の幅±${Math.round(cc.sd)}y` : ''}、${cc.n}球${isNum(cc.min) ? `、最短${Math.round(cc.min)}〜最長${Math.round(cc.max)}y` : ''}）` : '') + `[${cc.how}]`;
     else s += ': 飛距離データなし';
     if (st.side && st.side.n >= 3) s += `, 左右の中央値${st.side.med >= 0 ? '右' : '左'}${Math.abs(Math.round(st.side.med))}y`;
     const td = tendency(st); if (td) s += `, 傾向:${td}`;
@@ -342,20 +354,24 @@ $$('#tabbar button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
    ========================================================= */
 async function importMonitorFlow({ sessionId = null, after } = {}) {
   if (!db.clubs.length && !(await confirmBox('クラブが未登録です。読み込んだ番手は自動で登録します。続けますか？', '続ける'))) return;
-  const file = await pickFile('#file-image'); if (!file) return;
+  const files = await pickFiles('#file-images'); if (!files.length) return;
   try {
-    showLoading('画像を準備中…');
-    const b64 = await fileToJpegB64(file);
+    showLoading(`画像を準備中…（${files.length}枚）`);
+    const imgs = []; for (const f of files.slice(0, 6)) imgs.push(await fileToJpegB64(f));
     showLoading('AIが計測データを読み取り中…');
     const txt = await callClaude({
-      system: 'あなたはゴルフの弾道測定データを正確に書き起こすアシスタントです。JSONのみを出力します。',
-      images: [b64], maxTokens: 4000,
-      text: `この画像はゴルフの弾道測定器（トラックマン、GCクワッド、スカイトラック、練習場の打席モニター、ゴルフナビ等）の画面、またはショットデータの表です。写っている全ショットを読み取り、次の形式のJSONだけを返してください。
-{"device":"機種やアプリ名(不明ならnull)","club":"画面全体の番手表記(あれば)","distanceUnit":"yd または m","speedUnit":"m/s または mph または km/h","shots":[{"club":"その行の番手表記(なければnull)","carry":数値|null,"total":数値|null,"ballSpeed":数値|null,"clubSpeed":数値|null,"launch":数値|null,"spin":数値|null,"side":数値|null}]}
-ルール: sideは左右のブレ量で右をプラス・左をマイナス（L/R表記なら符号に変換）。平均・合計・最大などの集計行は含めない。読めない値はnull。単位が画面に無ければ一般的な表示から推定。`
+      system: 'あなたはゴルフの弾道測定データやゴルフアプリのクラブ統計を正確に書き起こすアシスタントです。JSONのみを出力します。',
+      images: imgs, maxTokens: 6000,
+      text: `画像（${imgs.length}枚）は、ゴルフの弾道測定器（トラックマン、GCクワッド、Garmin Approach R10、練習場の打席モニター等）の画面、ショットデータの表、またはゴルフアプリ（Garmin Golf等）のクラブ統計画面です。種類を判定し、次のどちらかのJSONだけを返してください。
+A) 1球ごとのショットデータの場合:
+{"kind":"shots","device":"機種やアプリ名(不明ならnull)","club":"画面全体の番手表記(あれば)","distanceUnit":"yd または m","speedUnit":"m/s または mph または km/h","shots":[{"club":"その行の番手表記(なければnull)","carry":数値|null,"total":数値|null,"ballSpeed":数値|null,"clubSpeed":数値|null,"launch":数値|null,"spin":数値|null,"side":数値|null}]}
+B) 番手ごとの集計（平均距離・最大距離・通常の範囲など。Garmin Golfの「クラブ」画面など）の場合:
+{"kind":"summary","device":"アプリ名(不明ならnull)","distanceUnit":"yd または m","distanceType":"carry または total（画面に明記が無く、アプリがショット地点間の距離を測るもの[Garmin Golf等]ならtotal）","clubs":[{"club":"番手表記","avg":平均距離|null,"max":最大距離|null,"low":通常範囲の下限|null,"high":通常範囲の上限|null,"shots":集計に使ったショット数|null}]}
+ルール: sideは左右のブレ量で右をプラス・左をマイナス（L/R表記なら符号に変換）。Aでは平均・合計・最大などの集計行は含めない。読めない値はnull。単位が画面に無ければ一般的な表示から推定。複数枚は同じ種類の続きとして1つにまとめる。`
     });
     hideLoading();
     const data = parseJSON(txt);
+    if (data.kind === 'summary' && (data.clubs || []).length) return reviewClubSummary(data, after);
     const shots = (data.shots || []).filter(s => isNum(s.carry) || isNum(s.total) || isNum(s.ballSpeed));
     if (!shots.length) { toast('ショットデータが見つかりませんでした。画面全体がはっきり写るように撮影してください', 4500); return; }
     const dm = String(data.distanceUnit || 'yd').toLowerCase().startsWith('m') ? M2YD : 1;
@@ -394,7 +410,7 @@ function reviewMonitorRows(rows, device, sessionId, after) {
       if (!cid) { missing++; return; }
       if (cid.startsWith('new:')) {
         const name = cid.slice(4); let c = db.clubs.find(x => clubKey(x.name) === clubKey(name));
-        if (!c) { c = { id: uid(), name: name.normalize('NFKC'), type: guessType(name), brand: '', model: '' }; db.clubs.push(c); }
+        if (!c) { const nm = canonicalClubName(name); c = { id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }; db.clubs.push(c); }
         cid = c.id;
       }
       const get = k => num($(`.v[data-k="${k}"]`, tr).value);
@@ -406,6 +422,35 @@ function reviewMonitorRows(rows, device, sessionId, after) {
     save(); closeModal(); toast(`${cnt}球を保存しました`);
     ui.highlight = [...added];
     if (after) after([...added]); else { ui.statsView = 'club'; ui.statsSrc = 'all'; ui.statsClub = added.size === 1 ? [...added][0] : null; switchTab('stats'); }
+  };
+}
+
+// 番手ごとの集計（Garmin Golf等のクラブ統計画面）を取り込む
+function reviewClubSummary(data, after) {
+  const dm = String(data.distanceUnit || 'yd').toLowerCase().startsWith('m') ? M2YD : 1;
+  const rows = data.clubs.filter(x => x.club && (isNum(x.avg) || isNum(x.max))).map(x => ({ ...x, avg: isNum(x.avg) ? r1(x.avg * dm) : null, max: isNum(x.max) ? r1(x.max * dm) : null, low: isNum(x.low) ? r1(x.low * dm) : null, high: isNum(x.high) ? r1(x.high * dm) : null, m: matchClub(x.club) }));
+  const src = data.device || 'Garmin Golf';
+  let type = data.distanceType === 'carry' ? 'carry' : 'total';
+  const el = openModal(`<h2>${esc(src)} のクラブ統計</h2>
+    <p class="small muted">番手ごとの距離を取り込みます。自分の練習場・計測器のデータが8球以上ある番手はそちらを優先し、少ない番手ではこの数字をキャディの基準に使います。</p>
+    <div class="spread" style="margin-bottom:8px"><span class="small">この距離は</span><div class="seg" style="width:220px"><button data-ty="total" class="${type === 'total' ? 'on' : ''}">トータル</button><button data-ty="carry" class="${type === 'carry' ? 'on' : ''}">キャリー</button></div></div>
+    <p class="small muted" style="margin-top:-4px">Garmin Golfはショット地点の間を測るので通常は「トータル」です（キャリーはその93%で推定）。</p>
+    <div class="scroll-x"><table class="t"><tr><th>✓</th><th>番手</th><th>平均</th><th>最大</th><th>範囲</th></tr>
+    ${rows.map((x, i) => `<tr data-i="${i}"><td><input type="checkbox" class="ck" checked style="width:20px"></td><td><select class="cl"><option value="">（新規）${esc(canonicalClubName(x.club))}</option>${sortedClubs().map(c => `<option value="${c.id}" ${x.m && x.m.id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></td><td>${x.avg != null ? fmtN(x.avg) : '—'}</td><td>${x.max != null ? fmtN(x.max) : '—'}</td><td>${x.low != null && x.high != null ? fmtN(x.low) + '〜' + fmtN(x.high) : '—'}</td></tr>`).join('')}</table></div>
+    <button class="btn block" id="cs-save" style="margin-top:12px">取り込む</button>`);
+  $$('[data-ty]', el).forEach(b => b.onclick = () => { type = b.dataset.ty; $$('[data-ty]', el).forEach(x => x.classList.toggle('on', x === b)); });
+  $('#cs-save', el).onclick = () => {
+    let n = 0;
+    $$('tr[data-i]', el).forEach(tr => {
+      if (!$('.ck', tr).checked) return;
+      const x = rows[+tr.dataset.i]; let cid = $('.cl', tr).value, c = clubById(cid);
+      if (!c) { const nm = canonicalClubName(x.club); c = db.clubs.find(y => clubKey(y.name) === clubKey(nm)) || { id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }; if (!db.clubs.includes(c)) db.clubs.push(c); }
+      const f = type === 'total' ? 0.93 : 1, base = isNum(x.avg) ? x.avg : x.max * 0.92;
+      c.ext = { src, type, avg: x.avg, max: x.max, low: isNum(x.low) ? r1(x.low * f) : null, high: x.high, carry: r1(base * f), sd: isNum(x.low) && isNum(x.high) ? r1((x.high - x.low) * f / 2.7) : null, shots: x.shots || null, at: Date.now() };
+      n++;
+    });
+    save(); closeModal(); toast(`${n}本のクラブに${src}の距離を取り込みました`, 3500);
+    if (after) after(); else switchTab('clubs');
   };
 }
 
@@ -529,12 +574,14 @@ function renderClubs() {
   el.innerHTML = `<h2>マイクラブ</h2>
     <div class="card">
       <button class="btn block" id="cl-cam">📷 カメラで撮影して登録</button>
+      <button class="btn block light" id="cl-garmin">⌚ Garmin Golfのクラブ統計を取り込む（スクショ）</button>
       <div class="grid2"><button class="btn ghost" id="cl-add">＋ 手動で追加</button><button class="btn light" id="cl-preset">標準セットを追加</button></div>
       <p class="small muted" style="margin:6px 0 0;line-height:1.6">ヘッドのソールやシャフトのラベル、キャディバッグ全体を撮影すると、AIがメーカー・モデル・番手・ロフト・シャフトを読み取ります。</p>
     </div>
     ${list ? `<div class="card">${list}</div>` : '<p class="muted">まだクラブがありません。</p>'}
     ${db.clubs.length ? `<h3>飛距離の階段</h3><div class="card">${gappingChart()}</div>` : ''}`;
   $('#cl-cam').onclick = clubCameraFlow;
+  $('#cl-garmin').onclick = () => { toast('Garmin Golfアプリの「統計 → クラブ」画面のスクリーンショットを選んでください（複数枚OK）', 4000); setTimeout(() => importMonitorFlow({ after: () => switchTab('clubs') }), 400); };
   $('#cl-add').onclick = () => clubForm(null);
   $('#cl-preset').onclick = () => {
     let n = 0; PRESET.forEach(([name, type, loft, carry]) => { if (!db.clubs.some(c => clubKey(c.name) === clubKey(name))) { db.clubs.push({ id: uid(), name, type, loft, manualCarry: carry, brand: '', model: '' }); n++; } });
