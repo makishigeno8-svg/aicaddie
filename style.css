@@ -179,3 +179,13 @@ table.gi select{padding:6px 2px;font-size:14px}
   .toast { bottom: 90px; }
   button, .chip, .list-item, [data-rd], [data-ch] { cursor: pointer; }
 }
+
+.club-row{display:flex;align-items:center;gap:6px;padding:10px 0;border-bottom:1px solid var(--line)}
+.club-row:last-child{border-bottom:0}
+.club-row .club-name{min-width:48px;font-size:19px}
+button.mini{border:1px solid #d6ddd9;background:#fff;border-radius:9px;padding:7px 7px;font-size:12px;font-weight:700;color:var(--green-d);flex:none}
+.dist-row{display:flex;align-items:center;gap:6px;padding:8px 0;border-bottom:1px solid var(--line)}
+.dist-row:last-child{border-bottom:0}
+.dist-row .step{width:42px;height:42px;border-radius:10px;border:0;background:var(--green-l);font-size:20px;font-weight:800;color:var(--green-d)}
+.dist-row .dv{width:64px;padding:8px 2px;text-align:center;font-size:19px;font-weight:800;border:1.5px solid #cfd6d2;border-radius:10px}
+.plan{border:1.5px solid var(--line);border-radius:12px;padding:10px;margin-top:8px;background:#fff}.plan.rec{border-color:var(--accent);background:#fffbeb}

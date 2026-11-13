@@ -116,6 +116,8 @@ function renderRoundStart() {
       <button class="btn block" id="find-course">📡 近くのゴルフ場を探す（GPS）</button>
       <button class="btn block ghost" id="search-course">🔍 ゴルフ場名で探す（全国）</button>
       <button class="btn block ghost" id="manual-course">✏️ 手動でコースを作成</button>
+      <button class="btn block ghost" id="demo-start" style="border-style:dashed">🎬 デモラウンド（サンプルコースで操作を試す）</button>
+      ${db.courses.some(c => c.demo) ? '<button class="btn block danger small" id="demo-del">デモのデータを削除</button>' : ''}
       <button class="btn block light" id="past-score">📝 過去のスコアを入力（スコアカード撮影も可）</button>
       <p class="small muted" style="margin:4px 0 0;line-height:1.6">ゴルフ場の中で「近くのゴルフ場を探す」を押すと、OpenStreetMapからホール・グリーン・フェアウェイ・バンカー・池を読み込みます。</p>
     </div>
@@ -127,6 +129,8 @@ function renderRoundStart() {
   $('#manual-course').onclick = manualCourseFlow;
   $('#search-course').onclick = () => searchCourseFlow(async c => { if (await confirmBox(`「${c.name}」でラウンドを開始しますか？`, '開始')) startRound(c.id); else renderRoundStart(); });
   $('#past-score').onclick = () => pastScoreFlow();
+  $('#demo-start').onclick = startDemo;
+  if ($('#demo-del')) $('#demo-del').onclick = async () => { if (await confirmBox('デモのコース・ラウンド・ショット記録をすべて削除しますか？（あなたのデータは消えません）', '削除')) deleteDemo(); };
   $$('[data-start]', el).forEach(b => b.onclick = () => startRound(b.dataset.start));
   $$('[data-editc]', el).forEach(b => b.onclick = () => editCourse(courseById(b.dataset.editc), renderRoundStart));
   $$('[data-rd]', el).forEach(b => b.onclick = () => showRoundDetail(db.rounds.find(r => r.id === b.dataset.rd)));
@@ -144,7 +148,8 @@ function showHandicapDetail() {
 
 /* ---------------- コース取得・作成・編集 ---------------- */
 /* ---------------- テストモード（PCで試す・擬似GPS） ---------------- */
-const testMode = () => !!db.settings.testMode;
+const isDemoCourse = () => { const c = curRound() && curCourse(); return !!(c && c.demo); };
+const testMode = () => !!db.settings.testMode || isDemoCourse();
 function testPosGuess() {
   if (ui.pos) return { lat: ui.pos.lat, lng: ui.pos.lng, acc: 3 };
   const h = curHole && curRound() ? curHole() : null;
@@ -303,6 +308,7 @@ function condForm(cur, onOK, { course, btn = '保存' } = {}) {
     ${unset ? `<div class="notice" style="margin-bottom:10px">グリーン位置が未設定のホールが ${unset} あります。<button class="btn small light" id="cf-prep" style="margin-top:6px">🗺 地図でティー・グリーンを設定する</button></div>` : ''}
     <button class="btn block accent" id="cf-cam">📷 本日のティー・ピン位置表を撮影して読み込む（複数枚OK）</button>
     <div id="cf-day" class="small" style="margin:-2px 0 12px;line-height:1.6">${c0.day && c0.day.holes ? dayInfoSummary(c0.day) : '<span class="muted">スタート前に掲示される「本日のピン位置・ティー位置」の表やカードを撮ると、ホールごとの距離とピン位置を読み取ってキャディに反映します。</span>'}</div>
+    ${(db.bagSets || []).length ? `<label class="f">今日のクラブセット<select id="cf-set"><option value="">今のバッグのまま（${bagCount()}本）</option>${db.bagSets.map(s => `<option value="${s.id}">${esc(s.name)}（${s.clubIds.length}本）</option>`).join('')}</select></label>` : ''}
     <div class="small muted">使用ティー</div><div class="chips" style="margin:4px 0 12px">${TEES.map(t => `<button class="chip ${c0.tee === t ? 'on' : ''}" data-tee="${t}">${t}</button>`).join('')}</div>
     <div class="small muted">グリーンスピード（スティンプメーター）</div>
     <div class="chips" style="margin:4px 0 6px">${SPEEDS.map(([l, v]) => `<button class="chip ${speedLabel(c0.stimp) === l ? 'on' : ''}" data-sp="${v}">${l}</button>`).join('')}</div>
@@ -322,7 +328,10 @@ function condForm(cur, onOK, { course, btn = '保存' } = {}) {
     $('#cf-day', el).innerHTML = dayInfoSummary(d);
   };
   if ($('#cf-prep', el)) $('#cf-prep', el).onclick = () => { closeModal(); coursePrep(course, 0, () => condForm(c0, onOK, { course, btn })); };
-  $('#cf-ok', el).onclick = () => { c0.stimp = num($('#cf-stimp', el).value); c0.memo = $('#cf-memo', el).value.trim(); closeModal(); onOK(c0); };
+  $('#cf-ok', el).onclick = () => {
+    const ss = $('#cf-set', el) && db.bagSets.find(x => x.id === $('#cf-set', el).value);
+    if (ss) { const ids = ss.clubIds.filter(id => clubById(id)).slice(0, BAG_MAX); db.clubs.forEach(c => c.inBag = ids.includes(c.id)); save(); toast(`「${ss.name}」をバッグにセットしました`); }
+    c0.stimp = num($('#cf-stimp', el).value); c0.memo = $('#cf-memo', el).value.trim(); closeModal(); onOK(c0); };
 }
 const SLOPES = ['受け（奥が高い）', '奥へ下る', '左が高い', '右が高い', '砲台', '2段', 'すり鉢', 'フラット'];
 const slopeText = h => [(h.slope || []).join('・'), h.slopeMemo].filter(Boolean).join('／');
@@ -426,6 +435,8 @@ async function coursePrep(course, idx = 0, after) {
 }
 function startPlay() {
   if (!map) initMap();
+  if (isDemoCourse()) { Object.values(baseLayers).forEach(l => map.hasLayer(l) && map.removeLayer(l)); map.getContainer().style.background = '#2f5e2c'; ui.demoBase = true; }
+  else if (ui.demoBase) { ui.demoBase = false; map.getContainer().style.background = ''; setBase(db.settings.mapProvider || 'esri'); }
   setTimeout(() => map.invalidateSize(), 50);
   keepAwake(true);
   renderTestBar();
@@ -513,6 +524,13 @@ const BASE_LABEL = { esri: '航空写真（Esri・無料）', google: 'Google衛
 
 function drawCourse() {
   const c = curCourse(); mapLayers.course.clearLayers(); if (!c) return;
+  if (c.demo) {
+    (c.roughs || []).forEach(p => L.polygon(p, { stroke: false, fillColor: '#3f7d3a', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
+    (c.fairways || []).forEach(p => L.polygon(p, { stroke: false, fillColor: '#6abf4b', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
+    (c.hazards || []).forEach(h => L.polygon(h.p, { color: h.t === 'water' ? '#1d4ed8' : '#c9b27a', weight: 1, fillColor: h.t === 'water' ? '#3b82f6' : '#f1e3b5', fillOpacity: .95, interactive: false }).addTo(mapLayers.course));
+    (c.greens || []).forEach(g => L.polygon(g, { color: '#166534', weight: 1, fillColor: '#8ee06a', fillOpacity: 1, interactive: false }).addTo(mapLayers.course));
+    return;
+  }
   (c.hazards || []).forEach(h => L.polygon(h.p, { color: h.t === 'water' ? '#1d4ed8' : '#b59545', weight: 1, fillColor: h.t === 'water' ? '#3b82f6' : '#e9d8a6', fillOpacity: .4, interactive: false }).addTo(mapLayers.course));
   (c.greens || []).forEach(g => L.polygon(g, { color: '#15803d', weight: 1, fillColor: '#4ade80', fillOpacity: .3, interactive: false }).addTo(mapLayers.course));
 }
@@ -635,9 +653,9 @@ function openShotSheet(opts = {}) {
   const el = openModal(`
     ${needRes ? `<h2>${prev.k}打目（${esc(clubById(prev.clubId)?.name || '')}）の結果</h2><p class="small muted" style="margin-top:-6px">ボールのある場所を選んでください${sel ? '（地図から推定して選択済み）' : ''}。${prev.k === 1 && h.par >= 4 ? 'フェアウェイキープとして記録されます。' : ''}</p><div id="sh-res">${resultChips(sel)}</div>` : ''}
     <h2 style="margin-top:${needRes ? '16px' : '6px'}">${k}打目のクラブ</h2>
-    ${opts.club && clubById(opts.club) ? `<button class="btn block accent" id="sh-rec" style="font-size:17px;padding:14px">🤖 キャディのおすすめ：${esc(clubById(opts.club).name)}で打つ</button>` : ''}
+    ${opts.club && clubById(opts.club) ? `<button class="btn block accent" id="sh-rec" style="font-size:17px;padding:14px">🤖 ${opts.plan && CADDIE_STYLES[opts.plan] ? CADDIE_STYLES[opts.plan].short + 'プラン' : 'キャディのおすすめ'}：${esc(clubById(opts.club).name)}で打つ</button>` : ''}
     <p class="small muted" style="margin-top:-6px">打つ前に、今いる場所でクラブを選んでください（打つ場所が記録されます）。${ui.pos ? `現在地：${lieAt(ui.pos) || (k === 1 ? 'ティー' : '—')}` : 'GPS取得中…'}</p>
-    <div class="chips">${sortedClubs().filter(c => c.type !== 'putter').map(c => `<button class="chip big ${opts.club === c.id ? 'on' : ''}" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>
+    <div class="chips">${bagClubs().filter(c => c.type !== 'putter').map(c => `<button class="chip big ${opts.club === c.id ? 'on' : ''}" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>
     <h3>ペナルティ（+1打）</h3><div class="chips">${PEN_TYPES.map(t => `<button class="chip" data-pen="${t}" style="border-color:#fca5a5;color:#b91c1c">${t}</button>`).join('')}</div>
     ${tr.length ? `<h3>このホールの記録</h3>${trackListHTML(tr)}<button class="btn small ghost" id="undo-trk" style="margin-top:8px">↩ 最後の記録を取り消す</button>` : ''}`);
   const pick = (cid, fromCaddie) => {
@@ -772,12 +790,30 @@ function airEffect() {
   const rho = w.pres * 100 / (287.05 * (w.temp + 273.15));
   return 0.55 * (1 - rho / 1.204); // +0.03 = 3%飛ぶ
 }
+// ボール・体の冷え：20℃より寒いと1℃あたり約0.1%飛ばない（最大-2.5%）、暑いと少し飛ぶ（最大+1%）
+function coldEffect() { const w = env.wx; if (!w || !isNum(w.temp)) return null; const t = w.temp; return t < 20 ? -Math.min(0.025, (20 - t) * 0.001) : Math.min(0.01, (t - 20) * 0.0005); }
 function playsLike(dist, bear) {
-  const w = windComp(bear), e = elevDiff(), a = airEffect();
+  const w = windComp(bear), e = elevDiff(), a = airEffect(), cold = coldEffect();
   if (!w && e == null && a == null) return null;
   const windF = w ? (w.head >= 0 ? 0.022 * w.head : 0.011 * w.head) : 0;
-  const parts = { wind: dist * windF, air: a != null ? -dist * a : 0, elev: e != null ? e * M2YD : 0 };
-  return { d: dist + parts.wind + parts.air + parts.elev, parts };
+  // parts は「必要な距離への加算（y）」：+なら長めに打つ
+  const parts = { wind: dist * windF, air: a != null ? -dist * a : 0, cold: cold != null ? -dist * cold : 0, elev: e != null ? e * M2YD : 0 };
+  parts.temp = parts.air + parts.cold;
+  // 横風で流される量（y）。右から(+)の風は左へ流れる → 狙いは右へ
+  const drift = w ? Math.abs(w.cross) * dist * 0.017 : 0;
+  const aim = w && Math.abs(w.cross) >= 1 ? { side: w.cross > 0 ? '右' : '左', y: drift, from: w.cross > 0 ? '右から' : '左から' } : null;
+  return { d: dist + parts.wind + parts.temp + parts.elev, parts, aim, w, temp: env.wx && env.wx.temp };
+}
+function calcText(dist, pl) {
+  if (!pl) return '';
+  const f = v => (v >= 0 ? '+' : '−') + Math.abs(Math.round(v)) + 'y';
+  const seg = [`${Math.round(dist)}y`];
+  if (Math.abs(pl.parts.temp) >= 0.5) seg.push(`気温${isNum(pl.temp) ? Math.round(pl.temp) + '℃' : ''}で${f(pl.parts.temp)}`);
+  if (pl.w && Math.abs(pl.parts.wind) >= 0.5) seg.push(`${pl.w.head >= 0 ? 'アゲンスト' : 'フォロー'}${Math.abs(pl.w.head).toFixed(1)}m/sで${f(pl.parts.wind)}`);
+  if (Math.abs(pl.parts.elev) >= 1) seg.push(`${pl.parts.elev > 0 ? '打ち上げ' : '打ち下ろし'}で${f(pl.parts.elev)}`);
+  let s = seg.join('、') + ` → 実質${Math.round(pl.d)}y`;
+  if (pl.aim) s += `。${pl.aim.from}${Math.abs(pl.w.cross).toFixed(1)}m/sの横風で約${Math.round(pl.aim.y)}y流れる → ${pl.aim.side}へ${Math.round(pl.aim.y)}y狙う`;
+  return s;
 }
 
 /* ---------------- 距離表示 ---------------- */
@@ -840,7 +876,7 @@ function updateDistances() {
     const pl = playsLike(gi.center, gi.bearing), ed = elevDiff();
     $('#d-plays').innerHTML = pl ? `実質 <b>${fmt(pl.d)}</b>${ed != null && Math.abs(ed) >= 2 ? `（${ed > 0 ? '上り' : '下り'}${Math.abs(Math.round(ed))}m）` : ''}` : '';
     const w = windComp(gi.bearing);
-    $('#d-wind').textContent = w ? `風${w.speed.toFixed(1)}m/s ${w.head >= 1 ? 'アゲ' : w.head <= -1 ? 'フォロー' : ''}${Math.abs(w.cross) >= 1 ? (w.cross > 0 ? '・右から' : '・左から') : ''}` : '';
+    $('#d-wind').textContent = w ? `風${w.speed.toFixed(1)}m/s ${w.head >= 1 ? 'アゲ' : w.head <= -1 ? 'フォロー' : ''}${pl && pl.aim ? `・${pl.aim.side}へ${fmtN(pl.aim.y)}${U()}` : ''}` : '';
   } else { $('#d-center').style.fontSize = ''; ['#d-front', '#d-center', '#d-back'].forEach(s => $(s).textContent = '—'); }
   const ti = $('#target-info');
   if (ui.target && pos) {
@@ -889,9 +925,12 @@ function showWeatherDetail() {
     ${row('風', `${r1(w.speed)}m/s ${dirName(w.dir)}から（最大${r1(w.gust)}m/s）`)}${row('降水', `${w.precip}mm／3時間以内の降水確率 ${w.pop ?? '—'}%`)}
     ${pl ? `<h3>実質距離の内訳（センター ${fmt(gi.center)}）</h3>
       ${row('風' + (wc ? `（${wc.head >= 0 ? 'アゲ' : 'フォロー'}${Math.abs(wc.head).toFixed(1)}m/s）` : ''), (pl.parts.wind >= 0 ? '+' : '') + fmtN(pl.parts.wind) + U())}
-      ${row(`気温・気圧（空気の重さ ${a != null ? (a >= 0 ? '飛ぶ ' : '飛ばない ') + Math.abs(r1(a * 100)) + '%' : ''}）`, (pl.parts.air >= 0 ? '+' : '') + fmtN(pl.parts.air) + U())}
+      ${row(`気温・気圧（空気の重さ）`, (pl.parts.air >= 0 ? '+' : '') + fmtN(pl.parts.air) + U())}
+      ${row(`寒さ・暑さ（ボールと体）`, (pl.parts.cold >= 0 ? '+' : '') + fmtN(pl.parts.cold) + U())}
       ${row('高低差', (pl.parts.elev >= 0 ? '+' : '') + fmtN(pl.parts.elev) + U())}
-      ${row('実質距離', fmt(pl.d))}` : ''}
+      ${row('実質距離', fmt(pl.d))}
+      ${pl.aim ? row(`横風（${pl.aim.from}${Math.abs(pl.w.cross).toFixed(1)}m/s）`, `${pl.aim.side}へ約${fmtN(pl.aim.y)}${U()}狙う`) : ''}
+      <p class="small" style="margin:8px 0 0">${esc(calcText(gi.center, pl))}</p>` : ''}
     <p class="small muted" style="line-height:1.6">気象：Open-Meteo（約10分ごとに更新）。実質距離は一般的な目安による簡易計算です。AIキャディはこれらに加え、雨によるランの減少や体の動きなども考慮して助言します。</p>
     <button class="btn block ghost" onclick="closeModal()">閉じる</button>`);
 }
@@ -987,7 +1026,7 @@ function prevRoundOnCourse(rec) {
 }
 function endRound() {
   const r = curRound(), c = curCourse();
-  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null, cond: r.cond || null, pins: r.pins || {} };
+  const rec = { id: r.id, courseId: c.id, courseName: c.name, date: r.date, scores: r.scores, track: r.track || {}, pars: Object.fromEntries(c.holes.map(h => [h.n, h.par])), sis: Object.fromEntries(c.holes.filter(h => h.si).map(h => [h.n, h.si])), rating: c.rating || null, slope: c.slope || null, weather: r.weather || env.wx || null, cond: r.cond || null, pins: r.pins || {}, demo: !!(r.demo || c.demo) };
   db.rounds.push(rec); db.activeRound = null; save(); stopPlay();
   const st = roundStats(rec), prev = prevRoundOnCourse(rec), ps = prev && roundStats(prev), hh = handicapHistory(), e = hh.out.find(x => x.r.id === rec.id);
   const el = openModal(`<h2>お疲れさまでした！</h2>
@@ -1084,7 +1123,8 @@ function caddieContext() {
     lines.push(`グリーンまで: センター${Math.round(gi.center)}y` + (gi.front != null ? `、手前エッジ${Math.round(gi.front)}y、奥エッジ${Math.round(gi.back)}y` : ''));
     const w = windComp(gi.bearing); if (w) lines.push(`風: ${w.speed.toFixed(1)}m/s（${dirName(w.dir)}から、最大瞬間${w.gust ? w.gust.toFixed(1) : '?'}m/s）→ ${w.head >= 0 ? 'アゲンスト' : 'フォロー'}成分${Math.abs(w.head).toFixed(1)}m/s、${w.cross >= 0 ? '右から左へ' : '左から右へ'}の横風${Math.abs(w.cross).toFixed(1)}m/s`);
     const ed = elevDiff(); if (ed != null) lines.push(`高低差(地形データの目安): グリーンが${ed >= 0 ? '高い' : '低い'} 約${Math.abs(Math.round(ed))}m`);
-    const pl = playsLike(gi.center, gi.bearing); if (pl) lines.push(`実質距離(簡易計算): 約${Math.round(pl.d)}y（内訳 風${Math.round(pl.parts.wind)} / 気温・気圧${Math.round(pl.parts.air)} / 高低差${Math.round(pl.parts.elev)}）`);
+    const pl = playsLike(gi.center, gi.bearing); if (pl) lines.push(`計算（グリーンセンター）: ${calcText(gi.center, pl)}`);
+    if (gi.pinSet && pl) { const pp = playsLike(gi.pin, gi.bearing); lines.push(`計算（ピン）: ${calcText(gi.pin, pp)}`); }
     const hz = hazardsAhead(pos, gi); lines.push('前方のハザード（打つ方向基準）: ' + (hz.length ? '\n- ' + hz.map(x => x.label).join('\n- ') : '地図データ上は特になし（未登録の可能性あり）'));
   } else lines.push('グリーン位置: 未設定のため距離不明');
   const wx = env.wx;
@@ -1120,21 +1160,24 @@ const CADDIE_SYSTEM = `あなたはツアー経験豊富なプロキャディで
 - 最初に結論（推奨番手と狙い所）、次に短い理由。
 - 必ず気象を考慮する：風（突風も）、気温（寒いとボールも体も飛ばない、暑いと飛ぶ）、気圧・標高による空気の重さ、雨（ランが減る・グリップ・ラフからのフライヤー）、降水確率。実質距離の簡易計算は参考にし、最終判断はプロとして行う。
 - 必ずグリーンの状態を考慮する：速い・硬いグリーンは止まりにくいので手前から転がす・奥のピンでもオーバー厳禁・下りのパットを残さない位置へ。遅い・柔らかいグリーンはピンまでキャリーで攻められる。ピン位置（手前・奥・左右）とハザード、グリーンの傾斜の関係で、上りのパットが残る安全サイドを示す。パットの質問には、グリーンスピードに合わせたタッチ（強さ）を具体的に助言する。
-- 番手選びは本人の実測キャリーの中央値（ミスショットを除いた普段の距離）を基準にし、普段の幅・最短距離（ミスした時）・左右の傾向、今日の実測、このホールの過去の結果を重視する。攻め・守りの度合いは下の【スタイル】に従う。
-- データにないこと（ライの細かい状態、ピン位置など）は「〜なら」と条件付きで触れる程度にする。
-- 回答の最後に改行して「推奨クラブ: 番手」を1行だけ付ける。番手はプレーヤーのクラブ一覧の表記（例: 7I、1W、52°）をそのまま使う。パットのみの質問やクラブと関係ない質問なら「推奨クラブ: なし」。`;
+- 番手選びは本人の実測キャリーの中央値（ミスショットを除いた普段の距離）を基準にし、普段の幅・最短距離（ミスした時）・左右の傾向、今日の実測、このホールの過去の結果を重視する。
+- 状況の「計算」行（気温・風・高低差による実質距離、横風で流される量と狙う方向）を必ず使い、アドバイスの中で「寒さで−7y、アゲンストで+10y、実質158y。右から風なので右へ5y」のように数字で短く伝える。
+- データにないこと（ライの細かい状態など）は「〜なら」と条件付きで触れる程度にする。
+- 攻めるか守るかで選択が分かれる場面（ハザード越え、2オン狙いかレイアップか、ピンを狙うかセンターか等）では、強気・バランス・安全の3プランを示し、最後にゴルファーに「どうしますか？」と質問する。選択が明らかな場面では1プランだけでよい。
+出力は次のJSONだけ（前後に文章を付けない）:
+{"advice":"音声で読み上げる2〜4文（160字程度・記号なし）。結論の番手と狙い所、計算の数字、迷う場面なら最後に質問","recommended":"attack|balance|safe","options":[{"style":"attack|balance|safe","club":"番手（プレーヤーのクラブ表記そのまま。パットならPT、クラブ不要ならnull）","target":"狙い所（短く）","plan":"そのプランの内容とリスク（40字程度）"}]}`;
 const CADDIE_STYLES = {
-  attack: { label: '🔥 攻め', desc: 'ピンを積極的に狙い、バーディを取りにいく', prompt: '【スタイル：攻め】ピンを積極的に狙い、バーディチャンスを作る選択を第一に提案する。ハザードのリスクは一言添えるが、届く・乗せられる可能性が十分あれば攻める番手とラインを勧める。パー5は2オンも積極的に検討する。' },
-  balance: { label: '⚖️ バランス', desc: '基本は安全に、チャンスでは攻める', prompt: '【スタイル：バランス】基本は大叩きを避けるマネジメントにし、ライ・距離・本人のばらつきから見て成功率が高い場面ではピンを狙う積極策も示す。' },
-  defend: { label: '🛡 守り', desc: 'ボギーOK。大叩きを徹底的に避けてスコアをまとめる', prompt: '【スタイル：守り】スコアをまとめることを最優先にする。グリーンセンターや広いサイド、ハザードを確実に避ける番手、無理なときはレイアップを勧める。ボギーで上がれば十分という考え方で、OB・池・バンカーのリスクを最小にする。' }
+  attack: { label: '🔥 強気', short: '強気' },
+  balance: { label: '⚖️ バランス', short: 'バランス' },
+  safe: { label: '🛡 安全', short: '安全' },
+  defend: { label: '🛡 安全', short: '安全' }
 };
-const caddieStyle = () => CADDIE_STYLES[db.settings.caddieStyle] ? db.settings.caddieStyle : 'balance';
+const caddieStyle = () => 'balance';
 $('#btn-caddie').onclick = () => openCaddie();
 function openCaddie(prefill = '') {
   if (db.settings.competition) { toast('競技モード中はAIアドバイスを使えません（設定で切替）', 3500); return; }
   const el = openModal(`<div class="spread"><h2>🎤 AIキャディ</h2></div>
-    <div class="seg" style="margin-bottom:10px">${Object.entries(CADDIE_STYLES).map(([k, v]) => `<button data-style="${k}" class="${caddieStyle() === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
-    <div class="chips" style="margin-bottom:10px">${['何番で打つ？', 'どこを狙う？', 'このホールの攻め方は？', 'レイアップすべき？', '風と気温の影響は？', 'パットはどう打つ？'].map(q => `<button class="chip" data-q="${q}">${q}</button>`).join('')}</div>
+    <div class="chips" style="margin-bottom:10px">${['何番で打つ？', 'どこを狙う？', 'このホールの攻め方は？', 'レイアップすべき？', '風と寒さで何ヤード変わる？', 'パットはどう打つ？'].map(q => `<button class="chip" data-q="${q}">${q}</button>`).join('')}</div>
     <div class="row"><textarea id="cq" rows="2" class="grow" style="padding:10px;border:1px solid #cfd6d2;border-radius:10px" placeholder="例: ライが左足下がり。何番がいい？">${esc(prefill)}</textarea>
     <button class="btn" id="cmic" style="height:56px;width:56px;font-size:22px">🎤</button></div>
     <button class="btn block" id="cask" style="margin-top:10px">キャディに聞く</button><div id="cans"></div>`, () => stopSpeak());
@@ -1143,20 +1186,25 @@ function openCaddie(prefill = '') {
     box.innerHTML = '<div class="ai-answer muted">考え中…</div>';
     if (!env.wx) await maybeFetchEnv();
     try {
-      const raw = await callClaude({ system: CADDIE_SYSTEM + '\n' + CADDIE_STYLES[caddieStyle()].prompt, text: `状況:\n${caddieContext()}\n\nゴルファーの質問: ${q || '次のショットのアドバイスをください'}`, maxTokens: 600 });
+      const raw = await callClaude({ system: CADDIE_SYSTEM, text: `状況:\n${caddieContext()}\n\nゴルファーの質問: ${q || '次のショットのアドバイスをください'}`, maxTokens: 1000 });
       if (!$('#cans')) return;
-      const m = raw.match(/推奨クラブ\s*[:：]\s*(.+)\s*$/m);
-      const ans = raw.replace(/\n?.*推奨クラブ\s*[:：].*$/m, '').trim();
-      let rec = m && !/なし/.test(m[1]) ? matchClub(m[1].replace(/[（(].*$/, '').trim()) : null;
-      if (!rec) { const found = sortedClubs().filter(c => c.type !== 'putter' && new RegExp('(^|[^0-9A-Za-z])' + c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^0-9A-Za-z]|$)', 'i').test(ans)); if (found.length === 1) rec = found[0]; }
+      let d; try { d = parseJSON(raw); } catch (err) { d = { advice: raw.replace(/\{[\s\S]*\}/, '').trim() || raw, options: [] }; }
+      const ans = String(d.advice || '').trim();
+      const opts = (d.options || []).map(o => ({ ...o, club: o.club && !/なし|null/i.test(o.club) ? matchClub(String(o.club).replace(/[（(].*$/, '').trim()) : null })).filter(o => o.plan || o.club);
+      const recStyle = d.recommended || (opts[0] && opts[0].style);
+      const multi = opts.length >= 2;
       $('#cans').innerHTML = `<div class="ai-answer">${esc(ans)}</div>
-        ${rec ? `<button class="btn block accent" id="cuse" style="margin-top:10px;font-size:17px;padding:14px">🏌️ おすすめの ${esc(rec.name)} で打つ</button>` : ''}
-        <div class="row" style="margin-top:8px"><button class="btn small light" id="crep">🔊 もう一度</button><button class="btn small ghost" id="cstop">⏹ 停止</button>${rec ? '<button class="btn small ghost" id="cother">別のクラブを選ぶ</button>' : ''}</div>`;
-      if (rec) { $('#cuse').onclick = () => { stopSpeak(); closeModal(); openShotSheet({ club: rec.id }); }; $('#cother').onclick = () => { stopSpeak(); closeModal(); openShotSheet(); }; }
+        ${multi ? `<div class="small muted" style="margin:10px 0 4px">プランを選ぶと、そのクラブでショット記録に進みます</div>` : ''}
+        ${opts.map((o, i) => `<div class="plan ${o.style === recStyle ? 'rec' : ''}">
+          <div class="spread"><b>${(CADDIE_STYLES[o.style] || { label: 'プラン' }).label}${o.style === recStyle && multi ? ' <span class="badge">キャディのおすすめ</span>' : ''}</b><span style="font-size:18px;font-weight:800">${o.club ? esc(o.club.name) : ''}</span></div>
+          ${o.target ? `<div class="small"><b>狙い：</b>${esc(o.target)}</div>` : ''}${o.plan ? `<div class="small muted">${esc(o.plan)}</div>` : ''}
+          ${o.club && o.club.type !== 'putter' ? `<button class="btn block ${o.style === recStyle ? 'accent' : 'light'}" data-plan="${i}" style="margin-top:6px">🏌️ ${multi ? 'このプランで ' : ''}${esc(o.club.name)} で打つ</button>` : ''}</div>`).join('')}
+        <div class="row" style="margin-top:8px"><button class="btn small light" id="crep">🔊 もう一度</button><button class="btn small ghost" id="cstop">⏹ 停止</button><button class="btn small ghost" id="cother">別のクラブを選ぶ</button></div>`;
+      $$('[data-plan]').forEach(bt => bt.onclick = () => { const o = opts[+bt.dataset.plan]; stopSpeak(); closeModal(); openShotSheet({ club: o.club.id, plan: o.style }); });
+      $('#cother').onclick = () => { stopSpeak(); closeModal(); openShotSheet(); };
       $('#crep').onclick = () => speak(ans); $('#cstop').onclick = stopSpeak; speak(ans);
     } catch (e) { if ($('#cans')) $('#cans').innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
   };
-  $$('[data-style]', el).forEach(b => b.onclick = () => { db.settings.caddieStyle = b.dataset.style; save(); $$('[data-style]', el).forEach(x => x.classList.toggle('on', x === b)); toast(`${CADDIE_STYLES[b.dataset.style].label}：${CADDIE_STYLES[b.dataset.style].desc}`, 2200); });
   $$('[data-q]', el).forEach(b => b.onclick = () => { $('#cq', el).value = b.dataset.q; ask(b.dataset.q); });
   $('#cask', el).onclick = () => ask($('#cq', el).value.trim());
   $('#cmic', el).onclick = async () => { const t = await listen(); if (t && $('#cq')) { $('#cq').value = t; ask(t); } };
@@ -1596,6 +1644,69 @@ function applyScorecard(d, player, state) {
   const date = d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : (state && state.date) || todayStr();
   toast('読み取り結果を確認して、間違いがあれば直してから保存してください', 4500);
   scoreGridForm({ course, date, values });
+}
+
+
+/* ---------------- デモラウンド（サンプルコースで操作を試す） ---------------- */
+function createDemo() {
+  const O = [35.36, 138.73], mLat = 111195, mLng = 111195 * Math.cos(O[0] * Math.PI / 180), Y = 0.9144;
+  const off = (p, dx, dy) => [Math.round((p[0] + dy / mLat) * 1e6) / 1e6, Math.round((p[1] + dx / mLng) * 1e6) / 1e6];
+  const go = (p, deg, m) => off(p, Math.sin(deg * Math.PI / 180) * m, Math.cos(deg * Math.PI / 180) * m);
+  const ellipse = (c, rx, ry, rot = 0, n = 18) => Array.from({ length: n }, (_, i) => { const t = i / n * 2 * Math.PI, x = Math.cos(t) * rx, y = Math.sin(t) * ry, q = rot * Math.PI / 180; return off(c, x * Math.cos(q) - y * Math.sin(q), x * Math.sin(q) + y * Math.cos(q)); });
+  const buffer = (line, w) => { const Lp = [], Rp = []; for (let i = 0; i < line.length; i++) { const a = line[Math.max(0, i - 1)], b = line[Math.min(line.length - 1, i + 1)], dx = (b[1] - a[1]) * mLng, dy = (b[0] - a[0]) * mLat, len = Math.hypot(dx, dy) || 1, nx = -dy / len * w, ny = dx / len * w; Lp.push(off(line[i], nx, ny)); Rp.push(off(line[i], -nx, -ny)); } return [...Lp, ...Rp.reverse()]; };
+  let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const PARS = [4, 4, 3, 5, 4, 4, 3, 4, 5, 4, 3, 4, 5, 4, 4, 3, 5, 4], SIS = [7, 3, 15, 1, 11, 5, 17, 9, 13, 8, 16, 2, 12, 6, 4, 18, 10, 14];
+  const holes = [], fairways = [], roughs = [], hazards = []; let start = O;
+  PARS.forEach((par, i) => {
+    if (i === 9) start = off(O, 900, -150);
+    const head = ((i % 9) * 40 + (i >= 9 ? 180 : 0)) % 360, tee = go(start, head + 60, 45);
+    const len = par === 3 ? 150 + rnd() * 40 : par === 4 ? 340 + rnd() * 80 : 480 + rnd() * 60, dog = (rnd() - 0.5) * 50;
+    let line;
+    if (par === 3) line = [tee, go(tee, head, len * Y)];
+    else if (par === 4) { const c = go(tee, head, 235 * Y); line = [tee, c, go(c, head + dog, (len - 235) * Y)]; }
+    else { const c1 = go(tee, head, 260 * Y), c2 = go(c1, head + dog, 170 * Y); line = [tee, c1, c2, go(c2, head - dog * 0.5, (len - 430) * Y)]; }
+    const g = line[line.length - 1], gp = ellipse(g, 15 + rnd() * 5, 11 + rnd() * 4, head);
+    holes.push({ n: i + 1, par, si: SIS[i], tee, line, green: centroid(gp), greenPoly: gp, slope: i % 4 === 0 ? ['受け（奥が高い）'] : [] });
+    roughs.push(buffer(line, 36));
+    if (par > 3) fairways.push(buffer([go(tee, head, 110), ...line.slice(1, -1), go(g, bearing(line[line.length - 2], g) + 180, 25)], 17));
+    hazards.push({ t: 'bunker', p: ellipse(go(g, head + 215, 22), 8, 5, head + 60) });
+    if (rnd() > 0.4) hazards.push({ t: 'bunker', p: ellipse(go(g, head + 140, 21), 7, 5, head - 50) });
+    if (par > 3) hazards.push({ t: 'bunker', p: ellipse(go(line[1], head + (rnd() > 0.5 ? 90 : -90), 26), 12, 7, head) });
+    if (rnd() > 0.6) hazards.push({ t: 'water', p: ellipse(go(par === 3 ? go(tee, head, len * Y * 0.6) : line[1], head + (rnd() > 0.5 ? 80 : -80), 45), 20, 42, head) });
+    start = g;
+  });
+  const course = { id: 'demo-course', demo: true, name: '🎬 デモカントリー倶楽部', source: 'demo', pref: 'デモ', holes, greens: holes.map(h => h.greenPoly), fairways, roughs, tees: [], hazards, rating: 72.4, slope: 131, center: O, created: Date.now(), lastCond: { tee: 'レギュラー', stimp: 9.5, firm: '普通', memo: '' } };
+  db.courses = db.courses.filter(c => c.id !== course.id); db.courses.push(course);
+  // クラブが無ければ標準セット
+  if (bagClubs().filter(c => c.type !== 'putter').length < 5) PRESET.forEach(([name, type, loft, carry]) => { if (!db.clubs.some(c => clubKey(c.name) === clubKey(name))) addClub({ id: uid(), name, type, loft, manualCarry: carry, brand: '', model: '', demo: true }); });
+  // 過去ラウンド3回（前回比較・総評・ハンデを試せるように）
+  const pars = Object.fromEntries(holes.map(h => [h.n, h.par])), sis = Object.fromEntries(holes.map(h => [h.n, h.si]));
+  db.rounds = db.rounds.filter(x => !x.demo);
+  [95, 91, 89].forEach((target, k) => {
+    const scores = {}; let tot = 0;
+    holes.forEach(h => { const putts = 1 + Math.round(rnd() * 1.6), extra = Math.round(rnd() * 2.2), pen = rnd() < .07 ? 1 : 0, st = h.par + extra; scores[h.n] = { shots: Math.max(1, st - putts - pen), putts, pen, fw: h.par > 3 ? rnd() < .5 : null }; tot += Math.max(1, st - putts - pen) + putts + pen; });
+    let d = target - tot, i = 0; while (d !== 0 && i < 300) { const s = scores[1 + (i * 7) % 18]; if (d > 0) { s.shots++; d--; } else if (s.shots > 1) { s.shots--; d++; } i++; }
+    db.rounds.push({ id: 'demo-r' + k, demo: true, courseId: course.id, courseName: course.name, date: new Date(Date.now() - (40 - k * 12) * 86400000).toISOString(), scores, track: {}, pars, sis, rating: course.rating, slope: course.slope, weather: { temp: 15 + k, hum: 60, code: 1, speed: 3, dir: 200, gust: 5, pres: 1010 } });
+  });
+  save();
+  return course;
+}
+function startDemo() {
+  const c = createDemo();
+  ui.pos = null; ui.testStep = 0;
+  db.activeRound = { id: 'demo-now', demo: true, courseId: c.id, date: new Date().toISOString(), hole: 0, scores: {}, track: {}, cond: c.lastCond, pins: {} };
+  save(); renderRound();
+  setTimeout(() => toast('デモです。「🚶 次の地点へ」で歩き、「ショット」でクラブを選んで記録してみてください', 5000), 600);
+}
+function deleteDemo() {
+  if (db.activeRound && db.activeRound.demo) { db.activeRound = null; stopPlay(); }
+  const ids = new Set(db.rounds.filter(r => r.demo || r.courseId === 'demo-course').map(r => r.id));
+  db.rounds = db.rounds.filter(r => !ids.has(r.id));
+  db.shots = db.shots.filter(s => !ids.has(s.roundId) && s.roundId !== 'demo-now');
+  db.courses = db.courses.filter(c => !c.demo);
+  const demoClubs = new Set(db.clubs.filter(c => c.demo).map(c => c.id));
+  if (demoClubs.size) { db.clubs = db.clubs.filter(c => !c.demo); db.shots = db.shots.filter(s => !demoClubs.has(s.clubId)); }
+  ui.pos = null; save(); toast('デモのデータをすべて削除しました'); renderRound();
 }
 
 /* ---------------- 起動 ---------------- */

@@ -281,6 +281,12 @@ function sortedClubs() {
   return [...db.clubs].sort((a, b) => (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) || n(a) - n(b) || (a.loft || 0) - (b.loft || 0));
 }
 const clubById = id => db.clubs.find(c => c.id === id);
+// バッグ（セット）とMYクラブ（保管）：バッグはゴルフ規則に合わせて14本まで
+const BAG_MAX = 14;
+function ensureBagFlags() { if (db.clubs.some(c => c.inBag === undefined)) { let n = db.clubs.filter(c => c.inBag === true).length; sortedClubs().forEach(c => { if (c.inBag === undefined) { c.inBag = n < BAG_MAX; if (c.inBag) n++; } }); } }
+const bagClubs = () => { ensureBagFlags(); return sortedClubs().filter(c => c.inBag); };
+const bagCount = () => bagClubs().length;
+function addClub(c) { ensureBagFlags(); c.inBag = bagCount() < BAG_MAX; db.clubs.push(c); if (!c.inBag) toast(`バッグが${BAG_MAX}本なので「${c.name}」はMYクラブ（保管）に入れました`, 3500); return c; }
 function guessType(name) {
   const k = clubKey(name);
   if (k === 'DR') return 'driver'; if (k === 'PT') return 'putter';
@@ -326,7 +332,7 @@ function tendency(st) {
   if (st.dirs.R / t > 0.45) return '右に出やすい'; if (st.dirs.L / t > 0.45) return '左に出やすい'; return 'ほぼ真っ直ぐ';
 }
 function bagSummaryForAI() {
-  return sortedClubs().filter(c => c.type !== 'putter').map(c => {
+  return bagClubs().filter(c => c.type !== 'putter').map(c => {
     const cc = clubCarry(c), st = clubStats(c.id);
     let s = `${c.name}`;
     if (cc) s += `: ${cc.how === '実測' ? 'キャリー中央値' : 'キャリー目安'}${Math.round(cc.v)}y` + (cc.n ? `（平均${Math.round(cc.mean)}y${isNum(cc.sd) ? `、普段の幅±${Math.round(cc.sd)}y` : ''}、${cc.n}球${isNum(cc.min) ? `、最短${Math.round(cc.min)}〜最長${Math.round(cc.max)}y` : ''}）` : '') + `[${cc.how}]`;
@@ -410,7 +416,7 @@ function reviewMonitorRows(rows, device, sessionId, after) {
       if (!cid) { missing++; return; }
       if (cid.startsWith('new:')) {
         const name = cid.slice(4); let c = db.clubs.find(x => clubKey(x.name) === clubKey(name));
-        if (!c) { const nm = canonicalClubName(name); c = { id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }; db.clubs.push(c); }
+        if (!c) { const nm = canonicalClubName(name); c = addClub({ id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }); }
         cid = c.id;
       }
       const get = k => num($(`.v[data-k="${k}"]`, tr).value);
@@ -444,7 +450,7 @@ function reviewClubSummary(data, after) {
     $$('tr[data-i]', el).forEach(tr => {
       if (!$('.ck', tr).checked) return;
       const x = rows[+tr.dataset.i]; let cid = $('.cl', tr).value, c = clubById(cid);
-      if (!c) { const nm = canonicalClubName(x.club); c = db.clubs.find(y => clubKey(y.name) === clubKey(nm)) || { id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }; if (!db.clubs.includes(c)) db.clubs.push(c); }
+      if (!c) { const nm = canonicalClubName(x.club); c = db.clubs.find(y => clubKey(y.name) === clubKey(nm)) || addClub({ id: uid(), name: nm, type: guessType(nm), brand: '', model: '' }); }
       const f = type === 'total' ? 0.93 : 1, base = isNum(x.avg) ? x.avg : x.max * 0.92;
       c.ext = { src, type, avg: x.avg, max: x.max, low: isNum(x.low) ? r1(x.low * f) : null, high: x.high, carry: r1(base * f), sd: isNum(x.low) && isNum(x.high) ? r1((x.high - x.low) * f / 2.7) : null, shots: x.shots || null, at: Date.now() };
       n++;
@@ -478,7 +484,7 @@ function renderRange() {
     $$('[data-open]', el).forEach(b => b.onclick = () => showSessionDetail(b.dataset.open));
     return;
   }
-  const clubs = sortedClubs().filter(c => c.type !== 'putter');
+  const clubs = bagClubs().filter(c => c.type !== 'putter');
   if (!ui.rangeClub || !clubById(ui.rangeClub)) ui.rangeClub = clubs[0]?.id || null;
   const shots = db.shots.filter(x => x.sessionId === s.id);
   const cc = ui.rangeClub && clubById(ui.rangeClub);
@@ -561,36 +567,102 @@ function showSessionDetail(id) {
 /* =========================================================
    クラブ
    ========================================================= */
+function clubRowHTML(c) {
+  const cc = clubCarry(c), st = clubStats(c.id);
+  return `<div class="club-row" data-id="${c.id}">
+    <div class="club-name">${esc(c.name)}</div>
+    <div class="grow" data-edit="${c.id}" style="cursor:pointer;min-width:0"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b>${esc([c.brand, c.model].filter(Boolean).join(' ') || TYPE_LABEL[c.type] || '')}</b></div>
+      <div class="small muted">${[isNum(c.loft) ? c.loft + '°' : '', c.flex].filter(Boolean).map(esc).join('・')}${cc ? `${isNum(c.loft) || c.flex ? '・' : ''}<b style="color:var(--green-d)">${fmt(cc.v)}</b> ${st.n >= 3 ? '実測' : cc.how}` : ''}</div></div>
+    <button class="mini" data-move="${c.id}" title="${c.inBag ? '保管へ' : 'バッグへ'}">${c.inBag ? '↓保管' : '↑バッグ'}</button>
+    <button class="mini" data-edit="${c.id}" title="編集">✏️</button>
+    <button class="mini" data-del="${c.id}" title="削除">🗑</button></div>`;
+}
 function renderClubs() {
-  $('#topinfo').textContent = `${db.clubs.length}本`;
+  ensureBagFlags();
+  const bag = bagClubs(), store = sortedClubs().filter(c => !c.inBag), full = bag.length >= BAG_MAX;
+  $('#topinfo').textContent = `バッグ ${bag.length}/${BAG_MAX}本`;
+  db.bagSets = db.bagSets || [];
   const el = $('#clubs-root');
-  const list = sortedClubs().map(c => {
-    const cc = clubCarry(c), st = clubStats(c.id);
-    return `<div class="list-item" data-edit="${c.id}"><div class="club-name">${esc(c.name)}</div>
-      <div class="grow"><div><b>${esc([c.brand, c.model].filter(Boolean).join(' ') || TYPE_LABEL[c.type] || '')}</b></div>
-      <div class="small muted">${[isNum(c.loft) ? c.loft + '°' : '', c.shaft, c.flex].filter(Boolean).map(esc).join('・') || '詳細未入力'}</div></div>
-      <div style="text-align:right">${cc ? `<b style="font-size:18px">${fmt(cc.v)}</b><div class="small muted">${st.n ? st.n + '球' : cc.how}</div>` : '<span class="small muted">—</span>'}</div></div>`;
-  }).join('');
-  el.innerHTML = `<h2>マイクラブ</h2>
-    <div class="card">
+  el.innerHTML = `
+    <div class="card" style="padding:12px">
       <button class="btn block" id="cl-cam">📷 カメラで撮影して登録</button>
-      <button class="btn block light" id="cl-garmin">⌚ Garmin Golfのクラブ統計を取り込む（スクショ）</button>
-      <div class="grid2"><button class="btn ghost" id="cl-add">＋ 手動で追加</button><button class="btn light" id="cl-preset">標準セットを追加</button></div>
-      <p class="small muted" style="margin:6px 0 0;line-height:1.6">ヘッドのソールやシャフトのラベル、キャディバッグ全体を撮影すると、AIがメーカー・モデル・番手・ロフト・シャフトを読み取ります。</p>
+      <div class="grid2"><button class="btn ghost" id="cl-add">＋ 手動で追加</button><button class="btn light" id="cl-dist">📏 目安距離をまとめて調整</button></div>
+      <div class="grid2" style="margin-top:8px"><button class="btn light small" id="cl-garmin">⌚ Garmin Golfから取り込む</button><button class="btn light small" id="cl-preset">標準セットを追加</button></div>
     </div>
-    ${list ? `<div class="card">${list}</div>` : '<p class="muted">まだクラブがありません。</p>'}
-    ${db.clubs.length ? `<h3>飛距離の階段</h3><div class="card">${gappingChart()}</div>` : ''}`;
+    <div class="spread" style="margin-top:14px"><h3 style="margin:0">🏌️ バッグ（セット）</h3><span class="badge ${full ? '' : 'gray'}" style="font-size:13px">${bag.length} / ${BAG_MAX}本</span></div>
+    <div class="row" style="margin:8px 0"><select id="set-sel" class="grow" style="padding:8px;border:1px solid #cfd6d2;border-radius:10px"><option value="">保存したセットを呼び出す…</option>${db.bagSets.map(s => `<option value="${s.id}">${esc(s.name)}（${s.clubIds.length}本）</option>`).join('')}</select><button class="btn small light" id="set-save">今の構成を保存</button></div>
+    <div class="card" style="padding:4px 10px">${bag.map(clubRowHTML).join('') || '<p class="small muted">バッグにクラブがありません。下のMYクラブから「↑バッグ」で入れてください。</p>'}</div>
+    ${full ? `<p class="small muted" style="margin:-4px 0 8px">バッグは${BAG_MAX}本までです（ゴルフ規則）。入れ替えるときは先に1本「↓保管」してください。</p>` : ''}
+    <h3>🗄 MYクラブ（保管）<span class="small muted" style="font-weight:400">　${store.length}本</span></h3>
+    <div class="card" style="padding:4px 10px">${store.map(clubRowHTML).join('') || '<p class="small muted">保管中のクラブはありません。バッグから外したクラブや、持っているけど今は使わないクラブがここに入ります。</p>'}</div>
+    ${db.bagSets.length ? `<details class="card"><summary><b>保存したセットの管理</b></summary>${db.bagSets.map(s => `<div class="list-item"><div class="grow"><b>${esc(s.name)}</b><div class="small muted">${s.clubIds.map(id => clubById(id)?.name).filter(Boolean).map(esc).join(' ')}</div></div><button class="x-btn" data-delset="${s.id}">🗑</button></div>`).join('')}</details>` : ''}
+    ${bag.length ? `<h3>飛距離の階段（バッグ）</h3><div class="card">${gappingChart()}</div>` : ''}`;
   $('#cl-cam').onclick = clubCameraFlow;
   $('#cl-garmin').onclick = () => { toast('Garmin Golfアプリの「統計 → クラブ」画面のスクリーンショットを選んでください（複数枚OK）', 4000); setTimeout(() => importMonitorFlow({ after: () => switchTab('clubs') }), 400); };
   $('#cl-add').onclick = () => clubForm(null);
+  $('#cl-dist').onclick = distanceEditor;
   $('#cl-preset').onclick = () => {
-    let n = 0; PRESET.forEach(([name, type, loft, carry]) => { if (!db.clubs.some(c => clubKey(c.name) === clubKey(name))) { db.clubs.push({ id: uid(), name, type, loft, manualCarry: carry, brand: '', model: '' }); n++; } });
-    save(); renderClubs(); toast(`${n}本追加しました。目安キャリーは編集で調整してください`, 3500);
+    let n = 0; PRESET.forEach(([name, type, loft, carry]) => { if (!db.clubs.some(c => clubKey(c.name) === clubKey(name))) { addClub({ id: uid(), name, type, loft, manualCarry: carry, brand: '', model: '' }); n++; } });
+    save(); renderClubs(); toast(`${n}本追加しました。「📏 目安距離をまとめて調整」で距離を合わせてください`, 3500);
   };
   $$('[data-edit]', el).forEach(r => r.onclick = () => clubForm(clubById(r.dataset.edit)));
+  $$('[data-move]', el).forEach(b => b.onclick = () => {
+    const c = clubById(b.dataset.move);
+    if (!c.inBag && bagCount() >= BAG_MAX) { toast(`バッグは${BAG_MAX}本までです。先に1本「↓保管」してください`, 3000); return; }
+    c.inBag = !c.inBag; save(); renderClubs();
+  });
+  $$('[data-del]', el).forEach(b => b.onclick = () => deleteClub(clubById(b.dataset.del)));
+  $('#set-save').onclick = () => {
+    const ids = bagClubs().map(c => c.id); if (!ids.length) return toast('バッグが空です');
+    const m = openModal(`<h2>セットを保存</h2><label class="f">セットの名前<input id="ss-name" placeholder="例: いつもの、冬用、短いコース用" value="セット${db.bagSets.length + 1}"></label><p class="small muted">${bagClubs().map(c => esc(c.name)).join(' ')}</p><button class="btn block" id="ss-ok">保存</button>`);
+    $('#ss-ok', m).onclick = () => { db.bagSets.push({ id: uid(), name: $('#ss-name', m).value.trim() || 'セット', clubIds: ids }); save(); closeModal(); renderClubs(); toast('セットを保存しました'); };
+  };
+  $('#set-sel').onchange = e => {
+    const s = db.bagSets.find(x => x.id === e.target.value); if (!s) return;
+    const ids = s.clubIds.filter(id => clubById(id)).slice(0, BAG_MAX);
+    db.clubs.forEach(c => c.inBag = ids.includes(c.id)); save(); renderClubs(); toast(`「${s.name}」をバッグにセットしました（${ids.length}本）`);
+  };
+  $$('[data-delset]', el).forEach(b => b.onclick = async () => { if (await confirmBox('このセットを削除しますか？（クラブ自体は消えません）', '削除')) { db.bagSets = db.bagSets.filter(s => s.id !== b.dataset.delset); save(); renderClubs(); } });
+}
+async function deleteClub(c) {
+  if (!c) return;
+  const n = db.shots.filter(s => s.clubId === c.id).length;
+  const el = openModal(`<h2>${esc(c.name)} を削除</h2>
+    <p style="line-height:1.7">${n ? `このクラブには<b>ショットデータが${n}件</b>あります。` : ''}使わなくなっただけなら、削除せずに「保管」にするとデータが残ります。</p>
+    ${c.inBag ? '<button class="btn block light" id="dc-store">🗄 保管にする（データを残す）</button>' : ''}
+    <button class="btn block danger" id="dc-del">🗑 削除する${n ? '（ショットデータも削除）' : ''}</button>
+    <button class="btn block ghost" id="dc-cancel">キャンセル</button>`);
+  if ($('#dc-store', el)) $('#dc-store', el).onclick = () => { c.inBag = false; save(); closeModal(); renderClubs(); toast(`${c.name} を保管にしました`); };
+  $('#dc-del', el).onclick = () => {
+    db.clubs = db.clubs.filter(x => x.id !== c.id); db.shots = db.shots.filter(s => s.clubId !== c.id);
+    (db.bagSets || []).forEach(s => s.clubIds = s.clubIds.filter(id => id !== c.id));
+    save(); closeModal(); renderClubs(); toast(`${c.name} を削除しました`);
+  };
+  $('#dc-cancel', el).onclick = closeModal;
+}
+function distanceEditor() {
+  const list = [...bagClubs(), ...sortedClubs().filter(c => !c.inBag)].filter(c => c.type !== 'putter');
+  if (!list.length) return toast('クラブがありません');
+  const step = 5, unit = U() === 'm' ? 'm' : 'y';
+  const el = openModal(`<h2>📏 目安キャリー（自己申告）</h2>
+    <p class="small muted" style="margin-top:-4px">「普段のショットでだいたいこのくらい飛ぶ」というキャリーです。実測データが3球以上ある番手は、キャディは実測（中央値）を優先します。±は${step}${unit}ずつ。</p>
+    <div class="card" style="padding:4px 10px">${list.map(c => { const st = clubStats(c.id), med = st.carry && st.carry.n >= 3 ? st.carry.med : null, v = isNum(c.manualCarry) ? Math.round(toDisp(c.manualCarry)) : ''; return `<div class="dist-row" data-id="${c.id}">
+      <div class="club-name" style="min-width:48px;font-size:17px">${esc(c.name)}${c.inBag ? '' : '<div class="small muted" style="font-weight:400;font-size:10px">保管</div>'}</div>
+      <button class="step" data-d="-${step}">−</button><input class="dv" inputmode="numeric" value="${v}" placeholder="—"><button class="step" data-d="${step}">＋</button>
+      <div class="small muted" style="min-width:64px;text-align:right">${med != null ? `実測 ${fmtN(med)}${unit}<br><a href="#" data-copy="${Math.round(toDisp(med))}" style="color:var(--green)">←使う</a>` : ''}</div></div>`; }).join('')}</div>
+    <button class="btn block" id="de-save">保存</button>`);
+  $$('.dist-row', el).forEach(row => {
+    const inp = $('.dv', row);
+    $$('.step', row).forEach(b => b.onclick = () => { const cur = num(inp.value); const base = cur != null ? cur : (() => { const prev = row.previousElementSibling && num($('.dv', row.previousElementSibling).value); return prev != null ? prev - 10 : 150; })(); inp.value = Math.max(0, base + +b.dataset.d); });
+    const cp = $('[data-copy]', row); if (cp) cp.onclick = e => { e.preventDefault(); inp.value = cp.dataset.copy; };
+  });
+  $('#de-save', el).onclick = () => {
+    $$('.dist-row', el).forEach(row => { const c = clubById(row.dataset.id), v = num($('.dv', row).value); c.manualCarry = v != null ? r1(fromDisp(v)) : null; });
+    save(); closeModal(); renderClubs(); toast('目安距離を保存しました');
+  };
 }
 function gappingChart() {
-  const rows = sortedClubs().filter(c => c.type !== 'putter').map(c => ({ c, cc: clubCarry(c) })).filter(x => x.cc);
+  const rows = bagClubs().filter(c => c.type !== 'putter').map(c => ({ c, cc: clubCarry(c) })).filter(x => x.cc);
   if (!rows.length) return '<span class="small muted">飛距離データがありません</span>';
   const max = Math.max(...rows.map(x => x.cc.v + (x.cc.sd || 0))) * 1.05, W = 300, rowH = 24, H = rows.length * rowH + 6, x0 = 44;
   const sx = v => x0 + (v / max) * (W - x0 - 34);
@@ -609,21 +681,24 @@ function clubForm(c) {
     <div class="grid2"><label class="f">番手（表示名）<input id="cf-name" value="${esc(c.name)}" placeholder="7I, 1W, 52°"></label>
     <label class="f">種類<select id="cf-type">${Object.entries(TYPE_LABEL).map(([k, v]) => `<option value="${k}" ${c.type === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
     <div class="grid2"><label class="f">メーカー<input id="cf-brand" value="${esc(c.brand)}"></label><label class="f">モデル<input id="cf-model" value="${esc(c.model)}"></label></div>
-    <div class="grid3"><label class="f">ロフト°<input id="cf-loft" inputmode="decimal" value="${c.loft ?? ''}"></label><label class="f">フレックス<input id="cf-flex" value="${esc(c.flex)}"></label><label class="f">目安キャリー(${U() === 'm' ? 'm' : 'yd'})<input id="cf-carry" inputmode="numeric" value="${isNum(c.manualCarry) ? Math.round(toDisp(c.manualCarry)) : ''}"></label></div>
+    <div class="grid2"><label class="f">ロフト°<input id="cf-loft" inputmode="decimal" value="${c.loft ?? ''}"></label><label class="f">フレックス<input id="cf-flex" value="${esc(c.flex)}"></label></div>
+    <div class="small muted">目安キャリー（自己申告・${U() === 'm' ? 'm' : 'ヤード'}）</div>
+    <div class="carry-input" style="justify-content:flex-start;margin:4px 0 12px"><button data-cd="-5">−5</button><button data-cd="-1">−1</button><input id="cf-carry" type="number" inputmode="numeric" value="${isNum(c.manualCarry) ? Math.round(toDisp(c.manualCarry)) : ''}" style="width:96px;font-size:26px"><button data-cd="1">＋1</button><button data-cd="5">＋5</button></div>
     <label class="f">シャフト<input id="cf-shaft" value="${esc(c.shaft)}"></label>
     <label class="f">メモ<input id="cf-notes" value="${esc(c.notes)}"></label>
     <button class="btn block" id="cf-save">保存</button>
     ${isNew ? '' : `<div class="grid2"><button class="btn ghost" id="cf-stats">📊 統計を見る</button><button class="btn danger" id="cf-del">削除</button></div>`}`);
   $('#cf-name', el).oninput = e => { $('#cf-type', el).value = guessType(e.target.value); };
+  $$('[data-cd]', el).forEach(b => b.onclick = () => { const i = $('#cf-carry', el); i.value = Math.max(0, (num(i.value) ?? 150) + +b.dataset.cd); });
   $('#cf-save', el).onclick = () => {
     const name = $('#cf-name', el).value.trim().normalize('NFKC'); if (!name) { toast('番手を入力してください'); return; }
     const carry = num($('#cf-carry', el).value);
     Object.assign(c, { name, type: $('#cf-type', el).value, brand: $('#cf-brand', el).value.trim(), model: $('#cf-model', el).value.trim(), loft: num($('#cf-loft', el).value), flex: $('#cf-flex', el).value.trim(), shaft: $('#cf-shaft', el).value.trim(), notes: $('#cf-notes', el).value.trim(), manualCarry: carry != null ? r1(fromDisp(carry)) : null });
-    if (isNew) { c.id = uid(); db.clubs.push(c); }
+    if (isNew) { c.id = uid(); addClub(c); }
     save(); closeModal(); renderClubs();
   };
   if (!isNew) {
-    $('#cf-del', el).onclick = async () => { closeModal(); const n = db.shots.filter(s => s.clubId === c.id).length; if (await confirmBox(`${c.name} を削除しますか？${n ? `（ショットデータ${n}件も削除されます）` : ''}`, '削除')) { db.clubs = db.clubs.filter(x => x.id !== c.id); db.shots = db.shots.filter(s => s.clubId !== c.id); save(); renderClubs(); } };
+    $('#cf-del', el).onclick = () => { closeModal(); deleteClub(c); };
     $('#cf-stats', el).onclick = () => { closeModal(); ui.statsView = 'club'; ui.statsClub = c.id; switchTab('stats'); };
   }
 }
@@ -656,7 +731,7 @@ async function clubCameraFlow() {
         const name = $('.name', card).value.trim().normalize('NFKC'); if (!name) return;
         const t = $('.type', card).value, vals = { name, type: TYPE_LABEL[t] ? t : guessType(name), brand: $('.brand', card).value.trim(), model: $('.model', card).value.trim(), loft: num($('.loft', card).value), flex: $('.flex', card).value.trim(), shaft: $('.shaft', card).value.trim() };
         const ex = db.clubs.find(c => clubKey(c.name) === clubKey(name));
-        if (ex) Object.assign(ex, vals); else db.clubs.push({ id: uid(), ...vals }); n++;
+        if (ex) Object.assign(ex, vals); else addClub({ id: uid(), ...vals }); n++;
       });
       save(); closeModal(); renderClubs(); toast(`${n}本を登録しました`);
     };
@@ -766,9 +841,6 @@ function renderSettings() {
     <div class="card">
       <div class="switch"><span>距離の単位</span><select id="s-unit" style="padding:6px;border-radius:8px"><option value="yd">ヤード</option><option value="m">メートル</option></select></div>
       <div class="switch"><span>地図の種類</span><select id="s-map" style="padding:6px;border-radius:8px"><option value="esri">航空写真（Esri・無料）</option><option value="google">Google衛星写真</option><option value="osm">地図（OSM）</option></select></div>
-      <div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="small muted" style="margin-bottom:6px">キャディのスタイル</div>
-        <div class="seg"><button data-cs="attack">🔥 攻め</button><button data-cs="balance">⚖️ バランス</button><button data-cs="defend">🛡 守り</button></div>
-        <div class="small muted" id="cs-desc" style="margin-top:6px"></div></div>
       <div class="switch"><span>AIの回答を読み上げる</span><input type="checkbox" id="s-voice" ${s.voice ? 'checked' : ''}></div>
       <div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <label class="f" style="margin-bottom:6px">キャディの声<select id="s-vname"><option value="">おまかせ（若い女性の声を自動で選択）</option></select></label>
@@ -801,8 +873,7 @@ function renderSettings() {
   $('#s-model').onchange = e => { s.model = e.target.value; save(); };
   $('#s-unit').onchange = e => { s.unit = e.target.value; save(); };
   $('#s-voice').onchange = e => { s.voice = e.target.checked; save(); };
-  const csShow = () => { const k = caddieStyle(); $$('[data-cs]').forEach(b => b.classList.toggle('on', b.dataset.cs === k)); $('#cs-desc').textContent = CADDIE_STYLES[k].desc; };
-  $$('[data-cs]').forEach(b => b.onclick = () => { s.caddieStyle = b.dataset.cs; save(); csShow(); }); csShow();
+
   const fillVoices = () => {
     const sel = $('#s-vname'); if (!sel) return;
     const vs = jaVoices(), auto = pickVoice();
