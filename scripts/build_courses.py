@@ -1,6 +1,14 @@
 """日本のゴルフ場一覧（OpenStreetMap）を都道府県ごとに取得して data/courses-jp.json を作る。
 GitHub Actions から実行（毎月1回）。データ: © OpenStreetMap contributors (ODbL)"""
 import json, time, datetime, math, sys, urllib.request, urllib.parse
+try:
+    import pykakasi
+    _kks = pykakasi.kakasi()
+    def reading(s):
+        return "".join(i["hira"] for i in _kks.convert(s))
+except Exception:
+    def reading(s):
+        return ""
 
 PREFS = ["北海道","青森県","岩手県","宮城県","秋田県","山形県","福島県","茨城県","栃木県","群馬県","埼玉県","千葉県","東京都","神奈川県",
          "新潟県","富山県","石川県","福井県","山梨県","長野県","岐阜県","静岡県","愛知県","三重県","滋賀県","京都府","大阪府","兵庫県",
@@ -48,7 +56,10 @@ for i, pref in enumerate(PREFS, 1):
         key = f"{e['type'][0]}{e['id']}"
         if key in out:
             continue
-        kana = t.get("name:ja-Hira") or t.get("name:ja-Kana") or t.get("name:ja_kana") or t.get("name:ja_rm") or t.get("name:en") or ""
+        kana = t.get("name:ja-Hira") or t.get("name:ja-Kana") or t.get("name:ja_kana") or ""
+        auto = reading(name)
+        if auto and auto != kana:
+            kana = (kana + " " + auto).strip()
         out[key] = [name, kana, pref, round(c["lat"], 5), round(c["lon"], 5),
                     round(b["minlat"], 5), round(b["minlon"], 5), round(b["maxlat"], 5), round(b["maxlon"], 5)]
         n += 1

@@ -114,7 +114,7 @@ function renderRoundStart() {
       <div class="small muted">${hh.hi == null ? `18ホールのラウンドをあと${Math.max(0, 3 - n18)}回記録すると算出されます` : `18ホール ${n18}ラウンドから算出（直近20ラウンドのベスト${HI_TABLE[Math.min(n18, 20)][0]}）`}</div></div>
     <div class="card">
       <button class="btn block" id="find-course">📡 近くのゴルフ場を探す（GPS）</button>
-      <button class="btn block ghost" id="search-course">🔍 コース名で検索</button>
+      <button class="btn block ghost" id="search-course">🔍 ゴルフ場名で探す（全国）</button>
       <button class="btn block ghost" id="manual-course">✏️ 手動でコースを作成</button>
       <button class="btn block light" id="past-score">📝 過去のスコアを入力（スコアカード撮影も可）</button>
       <p class="small muted" style="margin:4px 0 0;line-height:1.6">ゴルフ場の中で「近くのゴルフ場を探す」を押すと、OpenStreetMapからホール・グリーン・フェアウェイ・バンカー・池を読み込みます。</p>
@@ -165,6 +165,15 @@ async function findCourseFlow() {
   try {
     showLoading('現在地を取得中…');
     const pos = await getPositionOnce();
+    const ix = await loadCourseIndex();
+    if (ix) {
+      hideLoading();
+      const near = ix.map(c => ({ c, d: distM(pos, { lat: c.lat, lng: c.lon }) })).sort((a, b) => a.d - b.d).slice(0, 10);
+      const el = openModal(`<h2>近くのゴルフ場</h2>${near.map((x, i) => `<div class="list-item" data-i="${i}" style="cursor:pointer"><div class="grow"><b>${esc(x.c.name)}</b><div class="small muted">${esc(x.c.pref)}・約${(x.d / 1000).toFixed(1)}km</div></div><button class="btn small">選ぶ</button></div>`).join('')}<button class="btn block ghost" id="nc-search" style="margin-top:8px">🔍 名前で探す</button>`);
+      $$('[data-i]', el).forEach(b => b.onclick = () => { closeModal(); useListedCourse(near[+b.dataset.i].c, async c => { if (await confirmBox(`「${c.name}」でラウンドを開始しますか？`, '開始')) startRound(c.id); else renderRoundStart(); }); });
+      $('#nc-search', el).onclick = () => { closeModal(); $('#search-course').click(); };
+      return;
+    }
     showLoading('近くのゴルフ場を検索中…');
     const j = await overpass(`[out:json][timeout:25];(way["leisure"="golf_course"](around:8000,${pos.lat},${pos.lng});relation["leisure"="golf_course"](around:8000,${pos.lat},${pos.lng}););out tags center bb;`);
     hideLoading();
@@ -1002,7 +1011,89 @@ async function nominatimSearch(q) {
   if (!r.ok) throw new Error('検索に失敗しました（' + r.status + '）。少し待ってからお試しください');
   return r.json();
 }
+/* ---------------- 日本のゴルフ場一覧（予測変換用） ---------------- */
+const COURSE_LIST_URLS = ['data/courses-jp.json', 'https://raw.githubusercontent.com/makishigeno8-svg/aicaddie/main/data/courses-jp.json'];
+let courseIndex = null, courseIndexP = null;
+function kataToHira(s) { return s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); }
+function normName(s) {
+  s = String(s || '').normalize('NFKC').toLowerCase().replace(/[\s・･\-‐－_.,、。()（）「」'"]/g, '').replace(/[ヶケヵゖ]/g, 'け');
+  s = kataToHira(s);
+  s = s.replace(/かん[とつ]りー?(くらぶ|倶楽部)|countryclub/g, 'cc').replace(/ごるふ(くらぶ|倶楽部|こーす)|golfclub|golfcourse/g, 'gc')
+       .replace(/ごるふりんくす/g, 'gl').replace(/倶楽部/g, 'くらぶ').replace(/ごるふじょう|ごるふ場|ごるふ|golf/g, '').replace(/ー/g, '');
+  return s;
+}
+function loadCourseIndex() {
+  if (courseIndex) return Promise.resolve(courseIndex);
+  if (courseIndexP) return courseIndexP;
+  courseIndexP = (async () => {
+    for (const u of COURSE_LIST_URLS) {
+      try {
+        const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) continue;
+        const j = await r.json(); if (!j.courses || !j.courses.length) continue;
+        courseIndex = j.courses.map(c => ({ name: c[0], kana: c[1], pref: c[2], lat: c[3], lon: c[4], bounds: { minlat: c[5], minlon: c[6], maxlat: c[7], maxlon: c[8] }, key: normName(c[0]), kkey: normName(c[1]), pkey: normName(c[2]) }));
+        courseIndex.updated = j.updated; return courseIndex;
+      } catch (e) { }
+    }
+    courseIndexP = null; return null;
+  })();
+  return courseIndexP;
+}
+function suggestCourses(q, limit = 20) {
+  if (!courseIndex) return [];
+  const toks = String(q).trim().split(/\s+/).map(normName).filter(Boolean); if (!toks.length) return [];
+  const out = [];
+  for (const c of courseIndex) {
+    let score = 0, ok = true;
+    for (const t of toks) {
+      if (c.key.startsWith(t)) score += 4; else if (c.key.includes(t)) score += 2;
+      else if (c.kkey && c.kkey.includes(t)) score += 2; else if (c.pkey.startsWith(t)) score += 1; else { ok = false; break; }
+    }
+    if (ok) out.push({ c, score: score - c.key.length / 100 });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, limit).map(x => x.c);
+}
+async function useListedCourse(x, onDone) {
+  const ex = db.courses.find(c => c.name === x.name);
+  if (ex) { toast('保存済みのコースを使います'); onDone && onDone(ex); return; }
+  const c = await importOsmCourse({ name: x.name, bounds: x.bounds }, { ask: false });
+  if (c) { c.center = [x.lat, x.lon]; c.pref = x.pref; save(); if (onDone) onDone(c); }
+}
 function searchCourseFlow(onDone, initial = '') {
+  const el = openModal(`<h2>🔍 ゴルフ場を探す</h2>
+    <input id="cs-q" value="${esc(initial)}" placeholder="ゴルフ場名を入力（例: 大洗、霞ヶ関、富士）" autocomplete="off" style="width:100%;padding:12px;border:2px solid var(--green);border-radius:12px;font-size:16px">
+    <div id="cs-status" class="small muted" style="margin:6px 2px">日本のゴルフ場一覧を読み込み中…</div>
+    <div id="cs-res"></div>
+    <div class="grid2" style="margin-top:8px"><button class="btn small ghost" id="cs-osm">🌐 一覧に無い場合：地図データで検索</button><button class="btn small ghost" id="cs-manual">✏️ 名前だけで作成</button></div>`);
+  const input = $('#cs-q', el), box = $('#cs-res', el), status = $('#cs-status', el);
+  const saved = () => db.courses.map(c => ({ name: c.name, pref: c.pref || '保存済み', saved: c }));
+  const render = () => {
+    const q = input.value.trim();
+    let list = [];
+    if (q) {
+      const nq = normName(q);
+      const sv = saved().filter(s => normName(s.name).includes(nq));
+      list = [...sv, ...suggestCourses(q).filter(c => !sv.some(s => s.name === c.name))].slice(0, 20);
+    } else list = saved().slice(0, 10);
+    box.innerHTML = list.length ? list.map((x, i) => `<div class="list-item" data-i="${i}" style="padding:10px 2px;cursor:pointer"><div class="grow"><b>${esc(x.name)}</b><div class="small muted">${esc(x.pref || '')}${x.saved ? ' ・<span style="color:var(--green)">保存済み</span>' : ''}</div></div><span class="muted">›</span></div>`).join('')
+      : (q ? '<p class="small muted">候補がありません。ひらがな・カタカナ、地名だけ（例「つくば」）でも探せます。</p>' : '');
+    $$('[data-i]', box).forEach(row => row.onclick = () => {
+      const x = list[+row.dataset.i]; closeModal();
+      if (x.saved) { onDone && onDone(x.saved); return; }
+      useListedCourse(x, onDone);
+    });
+  };
+  let t = null; input.oninput = () => { clearTimeout(t); t = setTimeout(render, 120); };
+  input.onkeydown = e => { if (e.key === 'Enter') render(); };
+  loadCourseIndex().then(ix => {
+    if (!$('#cs-status')) return;
+    status.textContent = ix ? `日本のゴルフ場 ${ix.length.toLocaleString()}件から検索できます（${ix.updated} 更新・OpenStreetMap）` : '一覧を読み込めませんでした（通信状況を確認）。「地図データで検索」を使ってください';
+    render();
+  });
+  render(); setTimeout(() => input.focus(), 200);
+  $('#cs-osm', el).onclick = () => { const q = input.value.trim(); closeModal(); osmSearchFlow(onDone, q); };
+  $('#cs-manual', el).onclick = () => { const nm = input.value.trim(); closeModal(); createCourseForm({ name: nm, btn: '作成', onCreated: c => onDone && onDone(c) }); };
+}
+function osmSearchFlow(onDone, initial = '') {
   const el = openModal(`<h2>🔍 コースを検索</h2>
     <div class="row"><input id="cs-q" class="grow" value="${esc(initial)}" placeholder="例: 〇〇カントリー倶楽部" style="padding:11px;border:1px solid #cfd6d2;border-radius:10px;font-size:15px"><button class="btn" id="cs-go">検索</button></div>
     <div id="cs-res" style="margin-top:10px"><p class="small muted">ゴルフ場の名前の一部でも検索できます（OpenStreetMapのデータ）。</p></div>

@@ -22,6 +22,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: 読み仮名ツールを準備
+        run: pip install pykakasi
       - name: OpenStreetMapからゴルフ場を取得
         run: python scripts/build_courses.py
       - name: 変更があればコミット
@@ -31,4 +33,5 @@ jobs:
           git add data/courses-jp.json
           if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
           git commit -m "ゴルフ場一覧を更新 ($(date +%Y-%m-%d))"
+          git pull --rebase origin main
           git push
